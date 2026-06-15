@@ -1,5 +1,5 @@
 # 원본: docker.io/grafana/grafana:12.4.2  (Grafana OSS)
-#   https://github.com/grafana/grafana (tag v12.4.2)
+#   https://github.com/grafana/grafana (tag v12.4.2, repo 루트 Dockerfile)
 # 원본 base:
 #   alpine-base (runtime) : alpine:3.23.3          (alpine / musl 계열)
 #   go-builder-base       : golang:1.25.8-alpine
@@ -7,25 +7,44 @@
 # 계열 매핑:
 #   runtime : alpine → baseimage/alpine  (musl 유지 — 원본 런타임이 musl alpine)
 #   builder : 빌드 전용 throwaway stage 이므로 upstream pinned base(golang/node) 유지.
-#             (출하되는 레이어가 아니라 정책 대상 아님 — argoexec 래핑과 동일한 판단)
-# 원본 Dockerfile 은 final stage 가 `FROM ${BASE_IMAGE}` 로 파라미터화되어 있고
-# apk 설치를 `grep -i alpine /etc/issue` 로 분기한다. 본 래핑은 그 final stage 를
-# baseimage/alpine 위에 그대로 충실히 재현한다(패키지/UID472/glibc shim/ENV/EXPOSE/ENTRYPOINT 보존).
-# 소스는 벤더링 대신 빌더에서 v12.4.2 태그를 git clone 후 upstream Makefile 로 빌드.
+#             (출하 레이어가 아니라 정책 대상 아님 — argoexec 래핑과 동일한 판단)
+# 원본은 js-builder(node) 와 go-builder(golang) 를 분리해서 빌드한다:
+#   - js-builder : `yarn install --immutable` 후 `yarn build` → public/ (프론트엔드, arch 무관)
+#   - go-builder : `make build-go` → bin/ (백엔드 바이너리, musl)
+#   런타임은 디스크의 public/ 을 서빙하므로 바이너리에 임베드되지 않는다(go/js 독립).
+# 소스는 벤더링 대신 source stage 에서 v12.4.2 태그를 1회 git clone 후 두 빌더에 COPY.
 ARG GIT_TAG=v12.4.2
 
-# ── builder (upstream go+js 빌드: throwaway, upstream pinned base 유지) ──────────
-FROM golang:1.25.8-alpine AS go-builder
-RUN apk add --no-cache git make bash gcc g++ musl-dev nodejs npm yarn python3
+# ── source (태그 고정 clone 1회) ─────────────────────────────────────────────────
+FROM golang:1.25.8-alpine AS source
+RUN apk add --no-cache git
 ARG GIT_TAG
 WORKDIR /tmp/grafana
 RUN git clone --depth 1 --branch ${GIT_TAG} https://github.com/grafana/grafana.git .
-# upstream Makefile 전체 빌드 (go 바이너리 + 프론트엔드 public/). 실패 시 build-go / build-js 분리.
-RUN make build
 
-# go-src / js-src 통합 alias (원본 final stage 의 COPY 출처와 동일 디렉터리 보유)
+# ── js-builder (원본과 동일: node:24-alpine, yarn install → yarn build) ───────────
+FROM node:24-alpine AS js-builder
+ENV NODE_OPTIONS=--max_old_space_size=8000
+ENV NODE_ENV=production
+WORKDIR /tmp/grafana
+RUN apk add --no-cache make build-base python3
+COPY --from=source /tmp/grafana /tmp/grafana
+# berry(yarn 4) — 원본과 동일하게 install 후 build. install 없이 build 하면 node_modules 부재로 실패.
+RUN yarn install --immutable
+RUN yarn build
+
+# ── go-builder (원본과 동일: golang:1.25.8-alpine, make build-go) ─────────────────
+FROM golang:1.25.8-alpine AS go-builder
+# arm64 빌드용 binutils-gold (golang/go#22040) + 빌드 도구
+RUN apk add --no-cache binutils-gold bash gcc g++ make git
+WORKDIR /tmp/grafana
+COPY --from=source /tmp/grafana /tmp/grafana
+RUN go mod download
+RUN make build-go GO_BUILD_TAGS=oss WIRE_TAGS=oss
+
+# helpers for COPY --from (원본 go-src / js-src alias)
 FROM go-builder AS go-src
-FROM go-builder AS js-src
+FROM js-builder AS js-src
 
 # ── runtime (원본 final stage 를 baseimage/alpine 으로 재현) ─────────────────────
 FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/alpine:3.23
@@ -54,8 +73,7 @@ WORKDIR $GF_PATHS_HOME
 RUN apk add --no-cache ca-certificates bash bubblewrap curl tzdata musl-utils && \
   apk info -vv | sort
 
-# glibc support for alpine x86_64 only (원본과 동일)
-# 일부 백엔드/플러그인이 glibc 를 필요로 하여 compat blob 를 /lib64 에 심는다.
+# glibc support for alpine x86_64 only (원본과 동일 — 일부 플러그인이 glibc 필요)
 ARG GLIBC_VERSION=2.40
 RUN if [ `arch` = "x86_64" ]; then \
   wget -qO- "https://dl.grafana.com/glibc/glibc-bin-$GLIBC_VERSION.tar.gz" | tar zxf - -C / \
