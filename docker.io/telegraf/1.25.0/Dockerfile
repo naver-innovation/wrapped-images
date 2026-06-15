@@ -27,17 +27,21 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
         libcap2-bin && \
     rm -rf /var/lib/apt/lists/*
 
-# influxdata 패키지 서명키 import (원본과 동일: 단일 키, ubuntu keyserver, IPv6 비활성)
+# influxdata 패키지 서명키 import.
+# 원본은 hkp://keyserver.ubuntu.com (11371) recv-keys 를 쓰지만 빌드 네트워크에서 hkp 포트가
+# 막혀 'keyserver receive failed' 로 실패한다. → HTTPS(443) keyserver 웹 조회로 키를 받아 import
+# (apt 가 HTTPS 로 동작했으므로 443 은 열려 있음). hkps 폴백 추가. disable-ipv6 유지.
 RUN set -ex && \
-    mkdir ~/.gnupg; \
-    echo "disable-ipv6" >> ~/.gnupg/dirmngr.conf; \
+    mkdir -p ~/.gnupg && chmod 700 ~/.gnupg && \
+    echo "disable-ipv6" >> ~/.gnupg/dirmngr.conf && \
     for key in \
         05CE15085FC09D18E99EFB22684A14CF2582E0C5 ; \
     do \
-        gpg --keyserver hkp://keyserver.ubuntu.com --recv-keys "$key" ; \
+        ( wget --no-verbose -O- "https://keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0x${key}" | gpg --batch --import ) || \
+        gpg --batch --keyserver hkps://keyserver.ubuntu.com --recv-keys "$key" ; \
     done
 
-ENV TELEGRAF_VERSION 1.25.0
+ENV TELEGRAF_VERSION=1.25.0
 # 아키텍처 감지 후 서명 .deb 다운로드 → GPG 검증 → dpkg 설치 (원본 동일)
 RUN ARCH= && dpkgArch="$(dpkg --print-architecture)" && \
     case "${dpkgArch##*-}" in \
