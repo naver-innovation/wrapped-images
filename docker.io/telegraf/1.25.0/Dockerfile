@@ -28,18 +28,18 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # influxdata 패키지 서명키 import.
-# 원본은 hkp://keyserver.ubuntu.com (11371) recv-keys 를 쓰지만 빌드 네트워크에서 hkp 포트가
-# 막혀 'keyserver receive failed' 로 실패한다. → HTTPS(443) keyserver 웹 조회로 키를 받아 import
-# (apt 가 HTTPS 로 동작했으므로 443 은 열려 있음). hkps 폴백 추가. disable-ipv6 유지.
+# 주의: telegraf_1.25.0-1_*.deb.asc 의 실제 서명키는 influxdata-archive_compat.key
+#   (fpr 9D539D90D3328DC7D6C8D3B9D8FF8E1F7DF8B07E) 이다.
+#   원본 Dockerfile 이 받던 05CE15085FC09D18E99EFB22684A14CF2582E0C5 구키는
+#   (a) ubuntu keyserver 에서 폐기(revoked)되어 공개키를 못 받고,
+#   (b) 현재 .asc 의 서명자도 아니다(InfluxData 가 compat 키로 재서명).
+# → InfluxData 가 HTTPS(443)로 직접 배포하는 compat 키를 받아 import 하고 fingerprint 를 핀(검증).
 RUN set -ex && \
     mkdir -p ~/.gnupg && chmod 700 ~/.gnupg && \
-    echo "disable-ipv6" >> ~/.gnupg/dirmngr.conf && \
-    for key in \
-        05CE15085FC09D18E99EFB22684A14CF2582E0C5 ; \
-    do \
-        ( wget --no-verbose -O- "https://keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0x${key}" | gpg --batch --import ) || \
-        gpg --batch --keyserver hkps://keyserver.ubuntu.com --recv-keys "$key" ; \
-    done
+    wget --no-verbose -O /tmp/influxdata-archive_compat.key https://repos.influxdata.com/influxdata-archive_compat.key && \
+    gpg --batch --import /tmp/influxdata-archive_compat.key && \
+    gpg --batch --list-keys 9D539D90D3328DC7D6C8D3B9D8FF8E1F7DF8B07E && \
+    rm -f /tmp/influxdata-archive_compat.key
 
 ENV TELEGRAF_VERSION=1.25.0
 # 아키텍처 감지 후 서명 .deb 다운로드 → GPG 검증 → dpkg 설치 (원본 동일)
