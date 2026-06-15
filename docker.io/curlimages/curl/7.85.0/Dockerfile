@@ -20,17 +20,19 @@ USER root
 
 ARG CURL_RELEASE_TAG
 ARG CURL_GIT_REPO
-ARG CURL_CONFIGURE_OPTION
+# curl 7.85 부터 TLS 백엔드를 명시하지 않으면 configure 가 실패한다(원본 curl-docker 는
+# 빌드 시스템이 CURL_CONFIGURE_OPTION 을 주입). 설치된 라이브러리에 맞춰 기본값을 지정.
+ARG CURL_CONFIGURE_OPTION="--with-openssl --with-libssh2 --with-nghttp2 --with-brotli --enable-ipv6"
 
-# 원본 builder 패키지 + git(clone 용). 나머지는 원본과 동일.
+# 원본 builder 패키지 + git(clone 용) + 빌드용 -dev 헤더(openssl/nghttp2/zlib).
 RUN apk add --no-cache \
         git \
         libssh2 libssh2-dev libssh2-static \
         autoconf automake build-base \
-        groff openssl curl-dev \
+        groff openssl openssl-dev curl-dev \
         python3 python3-dev \
         libtool curl stunnel perl \
-        nghttp2 brotli brotli-dev
+        nghttp2 nghttp2-dev zlib-dev brotli brotli-dev
 
 # 태그 고정 소스 체크아웃 (원본의 vendored COPY "curl" 대체)
 RUN git clone --depth 1 --branch ${CURL_RELEASE_TAG} ${CURL_GIT_REPO} /src/curl
