@@ -80,9 +80,11 @@ COPY --from=builder /alpine/usr/local/lib/libcurl.so.4.8.0 /usr/lib/
 COPY --from=builder /alpine/usr/local/bin/curl /usr/bin/curl
 COPY --from=builder /alpine/usr/local/include/curl /usr/include/curl
 
-# 원본과 동일한 명시적 심볼릭 링크 (libcurl.so.4.8.0 == curl 7.85.0 soname)
-RUN ln -s /usr/lib/libcurl.so.4.8.0 /usr/lib/libcurl.so.4 && \
-    ln -s /usr/lib/libcurl.so.4 /usr/lib/libcurl.so
+# 명시적 심볼릭 링크 (libcurl.so.4.8.0 == curl 7.85.0 soname).
+# baseimage/alpine 은 자체 libcurl 이 있어 libcurl.so.4 가 이미 존재 → -f 로 우리 빌드본으로 덮어쓴다
+# (원본 curl-docker 는 clean alpine 이라 -s 만으로 충분했음).
+RUN ln -sf /usr/lib/libcurl.so.4.8.0 /usr/lib/libcurl.so.4 && \
+    ln -sf /usr/lib/libcurl.so.4 /usr/lib/libcurl.so
 
 # CA 번들
 COPY --from=builder /cacert.pem /cacert.pem
