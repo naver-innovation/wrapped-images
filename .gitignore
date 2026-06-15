@@ -1,0 +1,24 @@
+# Local agent / tooling state
+.claude/
+.omc/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Build / temp artifacts
+*.log
+tmp/
+*.tmp
