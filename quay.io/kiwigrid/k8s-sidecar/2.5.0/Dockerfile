@@ -5,6 +5,8 @@
 # baseimage/alpine 에는 python 런타임이 없으므로 apk 로 보정 설치한다.
 # src/ 는 upstream tag 2.5.0 에서 그대로 벤더링.
 FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/alpine:3.23 AS base
+# baseimage/alpine 은 기본 USER 가 비루트 → apk/빌드 위해 root 로 전환 (런타임은 마지막 stage 에서 65534 로 복귀)
+USER root
 RUN apk add --no-cache python3
 
 FROM base AS builder
