@@ -1,0 +1,182 @@
+name: 'build-and-push-image'
+
+# main 브랜치에 <repo>/<tag>/Dockerfile 가 push 되면
+# 해당 이미지를 amd64 / arm64 네이티브로 빌드한 뒤 multi-arch manifest 로 OCIR 에 push 한다.
+#
+# 디렉토리 규칙 (repo 루트 = OCIR repository 경로):
+#   quay.io/kiwigrid/k8s-sidecar/2.5.0/Dockerfile
+#     -> me-riyadh-1.ocir.io/axlo4g31gl45/quay.io/kiwigrid/k8s-sidecar:2.5.0
+#   docker.io/library/busybox/1.37.0/Dockerfile
+#     -> me-riyadh-1.ocir.io/axlo4g31gl45/docker.io/library/busybox:1.37.0
+#   (Dockerfile 의 상위 디렉토리명 = tag, 그 위 전체 경로 = OCIR repository)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**/Dockerfile'
+  workflow_dispatch:
+    inputs:
+      image_dir:
+        description: '재빌드할 이미지 경로 (예: quay.io/kiwigrid/k8s-sidecar/2.5.0). 비우면 전체 재빌드.'
+        required: false
+        default: ''
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: me-riyadh-1.ocir.io
+  NAMESPACE: axlo4g31gl45
+
+jobs:
+  # 1) 변경된(또는 dispatch 로 지정된) Dockerfile 디렉토리를 찾아 빌드 매트릭스를 생성한다.
+  detect:
+    runs-on: arc-amd64
+    outputs:
+      build_matrix: ${{ steps.detect.outputs.build_matrix }}
+      image_matrix: ${{ steps.detect.outputs.image_matrix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed image directories
+        id: detect
+        run: |
+          set -euo pipefail
+          declare -A DIRS
+
+          # 변경 파일이 속한 이미지 디렉토리(= Dockerfile 이 있는 가장 가까운 상위 디렉토리)를 찾는다.
+          add_dir_from_file() {
+            local f="$1" d
+            d=$(dirname "$f")
+            while [[ "$d" != "." && "$d" != "/" ]]; do
+              if [[ -f "$d/Dockerfile" ]]; then DIRS["$d"]=1; return 0; fi
+              d=$(dirname "$d")
+            done
+          }
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            INPUT="${{ github.event.inputs.image_dir }}"
+            INPUT="${INPUT#./}"; INPUT="${INPUT%/}"
+            if [[ -n "$INPUT" ]]; then
+              if [[ -f "$INPUT/Dockerfile" ]]; then
+                DIRS["$INPUT"]=1
+              else
+                echo "::error::No Dockerfile at $INPUT"; exit 1
+              fi
+            else
+              while IFS= read -r df; do d="${df#./}"; DIRS["$(dirname "$d")"]=1; done \
+                < <(find . -type f -name Dockerfile -not -path './.git/*')
+            fi
+          else
+            BEFORE="${{ github.event.before }}"
+            if [[ -z "$BEFORE" || "$BEFORE" =~ ^0+$ ]]; then
+              RANGE_BASE=$(git hash-object -t tree /dev/null)   # 빈 트리 (초기 push 대응)
+            else
+              RANGE_BASE="$BEFORE"
+            fi
+            while IFS= read -r f; do add_dir_from_file "$f"; done \
+              < <(git diff --name-only "$RANGE_BASE" "${{ github.sha }}")
+          fi
+
+          # 매트릭스 JSON 생성 (jq 의존 없이 직접 구성)
+          build_json="["; image_json="["; fb=1; fi=1
+          for d in $(printf '%s\n' "${!DIRS[@]}" | sort); do
+            tag="${d##*/}"; image="${d%/*}"
+            [[ $fi -eq 1 ]] && fi=0 || image_json+=","
+            image_json+="{\"dir\":\"$d\",\"image\":\"$image\",\"tag\":\"$tag\"}"
+            for a in amd64 arm64; do
+              [[ $fb -eq 1 ]] && fb=0 || build_json+=","
+              build_json+="{\"dir\":\"$d\",\"image\":\"$image\",\"tag\":\"$tag\",\"arch\":\"$a\",\"runner\":\"arc-$a\"}"
+            done
+          done
+          build_json+="]"; image_json+="]"
+
+          echo "build_matrix=$build_json" >> "$GITHUB_OUTPUT"
+          echo "image_matrix=$image_json" >> "$GITHUB_OUTPUT"
+          if [[ ${#DIRS[@]} -eq 0 ]]; then
+            echo "변경된 이미지 없음 — 빌드 skip"
+          else
+            echo "Detected images:"; printf '%s\n' "${!DIRS[@]}" | sort | sed 's/^/  - /'
+          fi
+
+  # 2) 아키텍처별 네이티브 러너에서 빌드 후 arch-suffix 태그로 push 한다.
+  build:
+    needs: detect
+    if: needs.detect.outputs.build_matrix != '[]'
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.detect.outputs.build_matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          platforms: linux/${{ matrix.arch }}
+
+      - name: Log in to Oracle Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.OCIR_USERNAME }}
+          password: ${{ secrets.OCIR_AUTH_TOKEN }}
+
+      - name: Build and push (${{ matrix.arch }})
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.dir }}
+          file: ${{ matrix.dir }}/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image }}:${{ matrix.tag }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
+          provenance: false
+          sbom: false
+
+  # 3) arch 별 이미지를 묶어 multi-arch manifest(원본 태그)를 생성한다.
+  manifest:
+    needs: [detect, build]
+    if: needs.detect.outputs.image_matrix != '[]'
+    runs-on: arc-amd64
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.detect.outputs.image_matrix) }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Oracle Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.OCIR_USERNAME }}
+          password: ${{ secrets.OCIR_AUTH_TOKEN }}
+
+      - name: Create and push multi-arch manifest
+        run: |
+          set -euo pipefail
+          IMG="${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image }}"
+          TAG="${{ matrix.tag }}"
+          docker buildx imagetools create \
+            --tag "${IMG}:${TAG}" \
+            "${IMG}:${TAG}-amd64" \
+            "${IMG}:${TAG}-arm64"
+          echo "Pushed multi-arch manifest: ${IMG}:${TAG} (amd64, arm64)"
+          docker buildx imagetools inspect "${IMG}:${TAG}"
