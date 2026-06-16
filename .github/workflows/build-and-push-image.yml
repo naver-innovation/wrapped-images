@@ -33,6 +33,7 @@ concurrency:
 env:
   REGISTRY: me-riyadh-1.ocir.io
   NAMESPACE: axlo4g31gl45
+  OCI_REGION: me-riyadh-1
 
 jobs:
   # 1) 변경된(또는 dispatch 로 지정된) Dockerfile 디렉토리를 찾아 빌드 매트릭스를 생성한다.
@@ -108,9 +109,98 @@ jobs:
             echo "Detected images:"; printf '%s\n' "${!DIRS[@]}" | sort | sed 's/^/  - /'
           fi
 
-  # 2) 아키텍처별 네이티브 러너에서 빌드 후 arch-suffix 태그로 push 한다.
-  build:
+  # 2) OCIR 은 이 tenancy 에서 첫 push 시 repository 자동 생성이 꺼져 있다.
+  #    따라서 build/push 전에 OCI API 로 대상 repository 를 보장한다.
+  ensure-repositories:
     needs: detect
+    if: needs.detect.outputs.image_matrix != '[]'
+    runs-on: arc-amd64
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.detect.outputs.image_matrix) }}
+    env:
+      OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+      OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_COMPARTMENT_OCID: ${{ secrets.OCI_COMPARTMENT_OCID }}
+    steps:
+      - name: Validate OCI API credentials
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in OCI_TENANCY_OCID OCI_USER_OCID OCI_FINGERPRINT OCI_PRIVATE_KEY OCI_COMPARTMENT_OCID; do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            printf '::error::Missing required secrets for OCIR repository pre-create: %s\n' "${missing[*]}"
+            printf '::error::Set OCI API credentials with REPOSITORY_MANAGE permission, otherwise new OCIR repositories cannot be pushed because first-push auto-create is disabled.\n'
+            exit 1
+          fi
+
+      - name: Install OCI CLI
+        run: |
+          set -euo pipefail
+          if command -v oci >/dev/null 2>&1; then
+            oci --version
+            exit 0
+          fi
+          python3 -m pip install --user --upgrade oci-cli
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Configure OCI CLI
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.oci"
+          key_file="$RUNNER_TEMP/oci_api_key.pem"
+          printf '%s\n' "$OCI_PRIVATE_KEY" > "$key_file"
+          chmod 600 "$key_file"
+          cat > "$HOME/.oci/config" <<EOF
+          [DEFAULT]
+          user=${OCI_USER_OCID}
+          fingerprint=${OCI_FINGERPRINT}
+          tenancy=${OCI_TENANCY_OCID}
+          region=${OCI_REGION}
+          key_file=${key_file}
+          EOF
+          chmod 600 "$HOME/.oci/config"
+
+      - name: Ensure OCIR repository exists
+        run: |
+          set -euo pipefail
+          repo="${{ matrix.image }}"
+          echo "Ensuring OCIR repository: ${repo}"
+
+          set +e
+          output=$(oci artifacts container repository create \
+            --compartment-id "$OCI_COMPARTMENT_OCID" \
+            --display-name "$repo" \
+            --is-public false \
+            --output json 2>&1)
+          rc=$?
+          set -e
+
+          printf '%s\n' "$output"
+          if [[ $rc -eq 0 ]]; then
+            exit 0
+          fi
+          if grep -Eiq '409|Conflict|AlreadyExists|already exists|exists already|has already been created' <<<"$output"; then
+            echo "OCIR repository already exists: ${repo}"
+            exit 0
+          fi
+
+          printf '::error::Failed to ensure OCIR repository %s in compartment %s.\n' "$repo" "$OCI_COMPARTMENT_OCID"
+          printf '::error::The OCI principal must be able to create/manage Container Registry repositories before docker push can work.\n'
+          exit "$rc"
+
+  # 3) 아키텍처별 네이티브 러너에서 빌드 후 arch-suffix 태그로 push 한다.
+  build:
+    needs: [detect, ensure-repositories]
     if: needs.detect.outputs.build_matrix != '[]'
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -149,7 +239,7 @@ jobs:
           provenance: false
           sbom: false
 
-  # 3) arch 별 이미지를 묶어 multi-arch manifest(원본 태그)를 생성한다.
+  # 4) arch 별 이미지를 묶어 multi-arch manifest(원본 태그)를 생성한다.
   manifest:
     needs: [detect, build]
     if: needs.detect.outputs.image_matrix != '[]'

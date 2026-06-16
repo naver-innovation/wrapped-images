@@ -64,11 +64,16 @@ CI(`.github/workflows/build-and-push-image.yml`)는 `main` push 시 변경된 `*
 
 **대상 레지스트리** — `me-riyadh-1.ocir.io/axlo4g31gl45/<image>:<tag>` (워크플로 env `REGISTRY` / `NAMESPACE`)
 
-**OCIR 인증** — GitHub Secrets 사용: `OCIR_USERNAME`, `OCIR_AUTH_TOKEN` (repo/org Secrets 에 OCI 서비스 계정 auth token 설정)
+**OCIR 인증** — GitHub Secrets 사용:
+- Docker push: `OCIR_USERNAME`, `OCIR_AUTH_TOKEN` (OCI 서비스 계정 auth token)
+- Repository 사전 생성: `OCI_TENANCY_OCID`, `OCI_USER_OCID`, `OCI_FINGERPRINT`, `OCI_PRIVATE_KEY`, `OCI_COMPARTMENT_OCID`
+
+OCIR tenancy 의 `Create repository on first push` 정책이 꺼져 있으면 새 repository 로의 첫 push 가 실패한다. 이 workflow 는 build 전에
+`oci artifacts container repository create` 로 대상 repository 를 먼저 보장하므로, 위 OCI API credential 에는 Container Registry repository 생성/관리 권한이 있어야 한다.
 
 **동시성** — `${workflow}-${sha}` 그룹 + `cancel-in-progress: false` → 연속 머지 시 커밋별 빌드가 서로 취소되지 않고, 동일 커밋 재실행만 직렬화
 
-> 결과: OCIR 에 **arch-suffix 2개(`-amd64`/`-arm64`) + 멀티아치 manifest(원본 태그)** 가 올라갑니다.
+> 결과: OCIR repository 생성 보장 후 **arch-suffix 2개(`-amd64`/`-arm64`) + 멀티아치 manifest(원본 태그)** 가 올라갑니다.
 > ⚠️ amd64 전용 upstream(예: pinpoint)은 빌드 매트릭스를 amd64 로 제한해야 합니다(arm64 빌드 실패 방지).
 
 ---

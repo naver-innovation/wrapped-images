@@ -243,7 +243,7 @@ docker tag <로컬태그> me-riyadh-1.ocir.io/<TENANCY_NAMESPACE>/<APP_NS>/<IMAG
 docker push me-riyadh-1.ocir.io/<TENANCY_NAMESPACE>/<APP_NS>/<IMAGE>:<TAG>
 ```
 
-- OCIR repository 는 첫 push 시 자동 생성 (또는 `oci artifacts container repository create`)
+- OCIR repository 는 tenancy 설정에 따라 첫 push 자동 생성이 꺼져 있을 수 있다. 이 repo 의 CI 는 build 전에 `oci artifacts container repository create` 로 대상 repository 를 사전 생성한다.
 - 순수 외부 이미지는 **n3r 을 경유하지 않고 OCIR 에 직접 push** 한다
 - auth token 발급·계정: ask-oci 의 [container-registry.md](../../../ask-oci/skills/ask-oci/references/known-answers/container-registry.md) 참고
 
