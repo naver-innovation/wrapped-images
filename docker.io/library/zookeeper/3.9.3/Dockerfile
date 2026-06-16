@@ -24,10 +24,14 @@ ENV ZOO_CONF_DIR=/conf \
     ZOO_ADMINSERVER_ENABLED=true
 
 # Add a user with an explicit UID/GID and create necessary directories
-# baseimage/ubuntu 가 clean 보장이 안되므로 멱등하게 처리(이미 존재하면 무시).
+# baseimage/ubuntu:24.04 는 uid/gid 1000 을 기본 'ubuntu' 유저/그룹이 선점하고 있어
+# zookeeper 를 1000 으로 만들면 useradd 가 실패하고 이후 chown 도 깨진다(로컬 빌드로 확인).
+# → 충돌하는 ubuntu 유저/그룹을 먼저 제거해 1000 을 비운 뒤 zookeeper(1000) 생성. 멱등 처리.
 RUN set -eux; \
-    (groupadd -r zookeeper --gid=1000 2>/dev/null || true); \
-    (useradd -r -g zookeeper --uid=1000 zookeeper 2>/dev/null || true); \
+    (userdel -r ubuntu 2>/dev/null || true); \
+    (groupdel ubuntu 2>/dev/null || true); \
+    (getent group zookeeper >/dev/null || groupadd -r zookeeper --gid=1000); \
+    (getent passwd zookeeper >/dev/null || useradd -r -g zookeeper --uid=1000 zookeeper); \
     mkdir -p "$ZOO_DATA_LOG_DIR" "$ZOO_DATA_DIR" "$ZOO_CONF_DIR" "$ZOO_LOG_DIR"; \
     chown zookeeper:zookeeper "$ZOO_DATA_LOG_DIR" "$ZOO_DATA_DIR" "$ZOO_CONF_DIR" "$ZOO_LOG_DIR"
 
