@@ -1,0 +1,23 @@
+{
+  "name": "wrapped-images",
+  "owner": {
+    "name": "naver-innovation",
+    "url": "https://github.com/naver-innovation/wrapped-images"
+  },
+  "metadata": {
+    "description": "OCI(KSA) BaseImage 래핑 도구 마켓플레이스 — baseimage-oci 스킬 제공"
+  },
+  "plugins": [
+    {
+      "name": "baseimage-oci",
+      "source": "./",
+      "description": "외부 오픈소스 이미지를 허용 BaseImage(navix/ubuntu/alpine)로 래핑하는 /baseimage-oci 스킬",
+      "version": "0.3.0",
+      "author": {
+        "name": "taes.kim",
+        "email": "taes.kim@navercorp.com"
+      },
+      "keywords": ["oci", "baseimage", "navix", "ocir", "docker", "security"]
+    }
+  ]
+}

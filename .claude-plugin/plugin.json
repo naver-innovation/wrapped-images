@@ -1,0 +1,19 @@
+{
+  "name": "baseimage-oci",
+  "version": "0.3.0",
+  "description": "외부 오픈소스 이미지(Docker Hub 등)를 OCI(KSA) 이미지 보안 정책에 따라 허용 BaseImage(navix/ubuntu/alpine)로 래핑하는 워크플로 스킬. 원본 Dockerfile 탐색 → 계열 매핑 → FROM 교체 → (선택) 로컬 빌드·실행 테스트 → OCIR push → 보안검수. 공개 Dockerfile 부재 시 공개 대체 이미지/예외 whitelist 안내.",
+  "author": {
+    "name": "taes.kim",
+    "email": "taes.kim@navercorp.com"
+  },
+  "keywords": [
+    "oci",
+    "baseimage",
+    "navix",
+    "ocir",
+    "docker",
+    "security",
+    "wasl",
+    "ksa"
+  ]
+}
