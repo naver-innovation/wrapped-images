@@ -28,10 +28,12 @@ FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/navix:10.1-wasl-centos
 # navix 기본 USER 는 비루트 → dnf/설치 위해 root 로 전환.
 USER root
 
-# mysql 계정(uid/gid 999) 생성 — 원본과 동일. baseimage 가 clean 하지 않을 수 있어 멱등 처리.
+# mysql 계정 생성 — 원본은 uid/gid 999 고정이나, baseimage/navix 는 gid/uid 999 가 이미
+# 다른 계정에 선점돼 groupadd 가 exit 4 로 실패한다(로컬 빌드로 확인). → 999 를 우선 시도하되
+# 충돌 시 자동 id 로 폴백(멱등). useradd 는 그룹을 이름으로 참조해 가변 gid 에도 안전.
 RUN set -eux; \
-	getent group mysql >/dev/null 2>&1 || groupadd --system --gid 999 mysql; \
-	getent passwd mysql >/dev/null 2>&1 || useradd --system --uid 999 --gid 999 --home-dir /var/lib/mysql --no-create-home mysql
+	getent group mysql >/dev/null 2>&1 || groupadd --system --gid 999 mysql 2>/dev/null || groupadd --system mysql; \
+	getent passwd mysql >/dev/null 2>&1 || useradd --system --uid 999 --gid mysql --home-dir /var/lib/mysql --no-create-home mysql 2>/dev/null || useradd --system --gid mysql --home-dir /var/lib/mysql --no-create-home mysql
 
 # 빌드/설치에 필요한 도구. navix(slim 계열)에 curl/gnupg 가 없을 수 있어 먼저 보정 설치.
 # microdnf 우선, 없으면 dnf 사용. (원본 oraclelinux:8-slim 은 microdnf 만 존재)
