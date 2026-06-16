@@ -33,10 +33,12 @@ COPY entrypoint.sh /entrypoint.sh
 
 # lts / testing / prestable / etc
 ARG REPO_CHANNEL="lts"
-ARG REPOSITORY="https://packages.clickhouse.com/tgz/${REPO_CHANNEL}"
+ARG REPOSITORY="deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg] https://packages.clickhouse.com/deb ${REPO_CHANNEL} main"
 ARG VERSION="26.3.12.3"
 ARG PACKAGES="clickhouse-keeper"
-ARG DIRECT_DOWNLOAD_URLS=""
+# ClickHouse 공개 서명키 (HTTPS only + 지문 검증) — clickhouse-server 래핑과 동일.
+ARG CLICKHOUSE_KEY_URL="https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key"
+ARG CLICKHOUSE_KEY_FINGERPRINT="3A9EA1193A97B548BE1457D48919F6BD2B48D754"
 
 # upstream 이 tgz 설치에 쓰던 도구(wget/tar/sha512sum)와 런타임 의존(tzdata, su-exec 대체 gosu, bash)을
 # ubuntu apt 로 설치. su-exec 은 ubuntu 에 없으므로 gosu 로 대체(entrypoint.sh 가 둘 다 지원).
@@ -66,31 +68,31 @@ ARG DEFAULT_GID="101"
 RUN (groupadd -r -g "${DEFAULT_GID}" clickhouse || true) \
     && (useradd -r -g clickhouse -u "${DEFAULT_UID}" -d /var/lib/clickhouse -s /bin/bash -c "ClickHouse keeper" clickhouse || true)
 
-ARG TARGETARCH
-RUN arch=${TARGETARCH:-amd64} \
-    && cd /tmp && rm -f /tmp/*tgz && rm -f /tmp/*tgz.sha512 |: \
-    && if [ -n "${DIRECT_DOWNLOAD_URLS}" ]; then \
-        echo "installing from provided urls with tgz packages: ${DIRECT_DOWNLOAD_URLS}" \
-        && for url in $DIRECT_DOWNLOAD_URLS; do \
-            echo "Get ${url}" \
-            && wget -c -q "$url" \
-        ; done \
-    else \
-        for package in ${PACKAGES}; do \
-            cd /tmp \
-            && echo "Get ${REPOSITORY}/${package}-${VERSION}-${arch}.tgz" \
-            && wget -c -q "${REPOSITORY}/${package}-${VERSION}-${arch}.tgz" \
-            && wget -c -q "${REPOSITORY}/${package}-${VERSION}-${arch}.tgz.sha512" \
-        ; done \
-    fi \
-    && cat *.tgz.sha512 | sha512sum -c \
-    && for file in *.tgz; do \
-        if [ -f "$file" ]; then \
-            echo "Unpacking $file"; \
-            tar xvzf "$file" --strip-components=1 -C /; \
-        fi \
-    ; done \
-    && rm /tmp/*.tgz /install -r \
+# clickhouse-keeper 설치 — upstream alpine 의 tgz→/ 추출(`tar -C /`)은 glibc base 의
+# 시스템 파일/라이브러리를 덮어써 /usr/bin/rm 등이 깨진다(로컬 빌드로 확인).
+# → 형제 PR clickhouse-server 와 동일하게 deb 저장소 + GPG(HTTPS 키, 지문 검증) + apt 설치로 대체.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends dirmngr gnupg2 \
+    && mkdir -p /etc/apt/sources.list.d /usr/share/keyrings \
+    && GNUPGHOME=$(mktemp -d) \
+    && ( set -e; \
+        wget --progress=bar:force:noscroll -O "$GNUPGHOME/clickhouse.key" "${CLICKHOUSE_KEY_URL}"; \
+        GNUPGHOME="$GNUPGHOME" gpg --batch --import "$GNUPGHOME/clickhouse.key"; \
+        GNUPGHOME="$GNUPGHOME" gpg --batch --list-keys --with-colons --fingerprint \
+            | awk -F: '/^fpr:/ {print $10}' | grep -qx "${CLICKHOUSE_KEY_FINGERPRINT}"; \
+        GNUPGHOME="$GNUPGHOME" gpg --batch --no-default-keyring \
+            --keyring /usr/share/keyrings/clickhouse-keyring.gpg \
+            --import "$GNUPGHOME/clickhouse.key" \
+    ) \
+    && rm -rf "$GNUPGHOME" \
+    && chmod +r /usr/share/keyrings/clickhouse-keyring.gpg \
+    && echo "${REPOSITORY}" > /etc/apt/sources.list.d/clickhouse.list \
+    && echo "installing from repository: ${REPOSITORY}" \
+    && apt-get update \
+    && for package in ${PACKAGES}; do packages="${packages} ${package}=${VERSION}"; done \
+    && apt-get install --yes --no-install-recommends ${packages} \
+    && rm -rf /var/lib/apt/lists/* /var/cache/debconf /tmp/* \
+    && apt-get autoremove --purge -yq dirmngr gnupg2 \
     && chmod +x /entrypoint.sh \
     && cp /usr/share/zoneinfo/UTC /etc/localtime \
     && echo "UTC" > /etc/timezone
