@@ -60,9 +60,14 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends openjdk-17-jre-headless ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /pinpoint-web-boot.jar /pinpoint-web-boot.jar
+# 비루트 실행 유저(uid 1000) — pinpoint-collector 래핑과 동일. buildpack run image 도 비루트로 동작.
+RUN groupadd -g 1000 pinpoint 2>/dev/null || true \
+    && useradd -u 1000 -g 1000 -m -s /usr/sbin/nologin pinpoint 2>/dev/null || true
+
+COPY --from=builder --chown=1000:1000 /pinpoint-web-boot.jar /pinpoint-web-boot.jar
 
 # 원본 web-starter application.yml 기본값
 EXPOSE 8080
 
+USER 1000
 ENTRYPOINT ["java", "-jar", "/pinpoint-web-boot.jar"]
