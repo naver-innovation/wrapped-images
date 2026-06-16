@@ -1,10 +1,9 @@
 # 원본: docker.io/curlimages/curl:8.10.1
-#   https://github.com/curl/curl-docker (alpine/latest/Dockerfile)
-#   ※ curl-docker 리포는 git tag 를 두지 않으므로 curl 8.10.1 릴리스 태그(curl-8_10_1)를
-#     직접 체크아웃해 소스 빌드한다.
-# 원본 base:
-#   builder  : alpine:3.15.4  (alpine / musl 계열)
-#   runtime  : alpine:3.15.4  (alpine / musl 계열)
+#   curl/curl-docker 공개 history 는 8.1.1 근처에서 멈춰 있어 8.10.1 Dockerfile 기준점을
+#   특정하기 어렵다. 이 파일은 기존 wrapped-images 의 curl 7.85.0 래핑 패턴을 유지하고,
+#   curl 8.10.1 릴리스 태그(curl-8_10_1)를 직접 체크아웃해 소스 빌드한다.
+# 기준 패턴:
+#   docker.io/curlimages/curl/7.85.0/Dockerfile
 # 계열 매핑: alpine → baseimage/alpine  (musl 유지 — curl 바이너리/libcurl.so 가 musl ABI 링크, glibc 계열 교체 불가)
 # 원본은 curl 을 소스 빌드(curl-8_10_1 태그)하여 libcurl.so + curl 바이너리만 런타임에 복사한다.
 #   원본 builder 의 vendored 소스 트리(COPY "curl" /src/curl)를 태그 고정 git clone 으로 대체(벤더링 회피).
