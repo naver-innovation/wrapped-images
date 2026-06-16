@@ -154,8 +154,10 @@ COPY --from=builder /usr/local/bin/kustomize /usr/local/bin/kustomize
 RUN ln -sf /usr/local/bin/entrypoint.sh /usr/local/bin/uid_entrypoint.sh
 
 # configmap 마운트 지원 (멱등: mkdir -p / ln -sf).
+# baseimage/ubuntu 는 openssh 미설치라 /etc/ssh 가 없다 → 심볼릭 링크 전에 디렉터리 생성(로컬 빌드로 확인).
 WORKDIR /app/config/ssh
-RUN touch ssh_known_hosts && \
+RUN mkdir -p /etc/ssh && \
+    touch ssh_known_hosts && \
     ln -sf /app/config/ssh/ssh_known_hosts /etc/ssh/ssh_known_hosts
 
 WORKDIR /app/config
