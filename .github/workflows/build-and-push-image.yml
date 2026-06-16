@@ -24,7 +24,10 @@ on:
         default: ''
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # 각 push 는 "그 커밋이 바꾼 Dockerfile" 만 빌드(detect 의 git diff before..sha)하므로,
+  # ref 단위로 묶으면 연속 머지 시 pending run 이 최신 run 에게 밀려 취소되어 빌드가 유실된다.
+  # SHA 단위로 묶어 커밋끼리는 서로 취소하지 않고, 동일 커밋 재실행만 직렬화한다.
+  group: ${{ github.workflow }}-${{ github.sha }}
   cancel-in-progress: false
 
 env:
