@@ -1,5 +1,8 @@
-# Local agent / tooling state
-.claude/
+# Local agent / tooling state — track only the project-scope skill symlink
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/baseimage-oci
 .omc/
 
 # OS files
