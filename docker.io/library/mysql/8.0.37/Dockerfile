@@ -86,16 +86,19 @@ RUN set -eux; \
 RUN set -eux; \
 	key='859BE8D7C586F538430B19C2467B942D3A79BD29'; \
 	export GNUPGHOME="$(mktemp -d)"; \
-	curl -fsSL 'https://repo.mysql.com/RPM-GPG-KEY-mysql-2022' -o "$GNUPGHOME/mysql.key"; \
-	gpg --batch --import "$GNUPGHOME/mysql.key"; \
+	curl -fsSL 'https://repo.mysql.com/RPM-GPG-KEY-mysql-2022' -o "$GNUPGHOME/mysql-2022.key"; \
+	curl -fsSL 'https://repo.mysql.com/RPM-GPG-KEY-mysql-2023' -o "$GNUPGHOME/mysql-2023.key"; \
+	gpg --batch --import "$GNUPGHOME/mysql-2022.key" "$GNUPGHOME/mysql-2023.key"; \
 	gpg --batch --list-keys --with-colons --fingerprint | grep -qi "^fpr:::::::::${key}:"; \
 	mkdir -p /etc/pki/rpm-gpg; \
-	gpg --batch --export --armor "$key" > /etc/pki/rpm-gpg/RPM-GPG-KEY-mysql; \
+	gpg --batch --export --armor > /etc/pki/rpm-gpg/RPM-GPG-KEY-mysql; \
 	gpgconf --kill all || :; \
 	rm -rf "$GNUPGHOME"
 
 ENV MYSQL_MAJOR 8.0
-ENV MYSQL_VERSION 8.0.35-1.el8
+# navix 는 OpenSSL 3 만 제공 → el8 RPM(libssl.so.1.1 필요)은 설치 불가, compat-openssl11 도 없음.
+# el9 docker repo 는 8.0.35 가 없고 8.0.37 이 최저 → 사용자 결정에 따라 8.0.37(el9, OpenSSL3 링크)로 상향.
+ENV MYSQL_VERSION 8.0.37-1.el9
 
 # MySQL 커뮤니티 서버(minimal) 레포 등록.
 # 원본은 ${VERSION_ID%%[.-]*} 로 EL 메이저를 동적 치환하나, navix 는 CentOS 10 → el10 docker 경로가
@@ -105,7 +108,7 @@ RUN set -eu; \
 		echo '[mysql8.0-server-minimal]'; \
 		echo 'name=MySQL 8.0 Server Minimal'; \
 		echo 'enabled=1'; \
-		echo 'baseurl=https://repo.mysql.com/yum/mysql-8.0-community/docker/el/8/$basearch/'; \
+		echo 'baseurl=https://repo.mysql.com/yum/mysql-8.0-community/docker/el/9/$basearch/'; \
 		echo 'gpgcheck=1'; \
 		echo 'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-mysql'; \
 # https://github.com/docker-library/mysql/pull/680#issuecomment-825930524
@@ -139,25 +142,11 @@ RUN set -eux; \
 	mysqld --version; \
 	mysql --version
 
-# MySQL Tools(mysql-shell) 레포 등록 + 설치.
-RUN set -eu; \
-	{ \
-		echo '[mysql-tools-community]'; \
-		echo 'name=MySQL Tools Community'; \
-		echo 'baseurl=https://repo.mysql.com/yum/mysql-tools-community/el/8/$basearch/'; \
-		echo 'enabled=1'; \
-		echo 'gpgcheck=1'; \
-		echo 'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-mysql'; \
-# https://github.com/docker-library/mysql/pull/680#issuecomment-825930524
-		echo 'module_hotfixes=true'; \
-	} | tee /etc/yum.repos.d/mysql-community-tools.repo
-ENV MYSQL_SHELL_VERSION 8.0.35-1.el8
-RUN set -eux; \
-	if command -v microdnf >/dev/null 2>&1; then PKG=microdnf; else PKG=dnf; fi; \
-	$PKG install -y "mysql-shell-$MYSQL_SHELL_VERSION"; \
-	$PKG clean all; \
-	\
-	mysqlsh --version
+# MySQL Tools(mysql-shell) 는 생략한다.
+#   el9 mysql-shell 패키지는 libpython3.9.so.1.0 을 요구하나, navix(el10) 는 python3.12 만 제공해
+#   설치가 불가하다(로컬 빌드로 확인). mysqlsh 는 보조 관리 도구로 mysqld/mysql 클라이언트 동작에는
+#   영향이 없으므로, 서버 기능을 갖춘 이미지로 제공한다. (navix 가 python3.9 를 제공하거나 mysql 이
+#   el10 mysql-shell 을 배포하면 다시 추가 가능.)
 
 VOLUME /var/lib/mysql
 
