@@ -86,6 +86,9 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PINOT_HOME=/opt/pinot
+# PINOT_BUILD_DIR 는 빌더 stage 의 ENV 라 런타임 stage 에서는 정의되지 않는다.
+# 아래 COPY --from 의 ${PINOT_BUILD_DIR} 경로가 빈 값으로 풀려 깨지므로 런타임 stage 에도 정의한다.
+ENV PINOT_BUILD_DIR=/opt/pinot-build
 ENV JAVA_OPTS="-Xms4G -Xmx4G -Dpinot.admin.system.exit=false"
 
 VOLUME ["${PINOT_HOME}/configs", "${PINOT_HOME}/data"]
