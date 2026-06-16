@@ -90,7 +90,7 @@ RUN set -eux ; \
     apk upgrade ; \
     apk add --no-cache openjdk21-jre-headless gcompat procps bash; \
     apk add --no-cache --virtual .kafka-fetch wget gpg gpg-agent; \
-    mkdir -p opt/kafka; \
+    mkdir -p /opt/kafka; \
     wget -nv -O kafka.tgz "$kafka_url"; \
     wget -nv -O kafka.tgz.asc "$kafka_url.asc"; \
     tar xfz kafka.tgz -C /opt/kafka --strip-components 1; \
