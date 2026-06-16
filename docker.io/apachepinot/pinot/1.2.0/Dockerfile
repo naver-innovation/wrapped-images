@@ -20,20 +20,20 @@
 #   https://github.com/apache/pinot (tag release-1.2.0)
 #   원본 Dockerfile: docker/images/pinot/Dockerfile
 # 원본 base:
-#   builder  : apachepinot/pinot-base-build:11-amazoncorretto    (Amazon Linux 2 / glibc, maven+JDK11 빌드 환경)
+#   builder  : apachepinot/pinot-base-build:11-amazoncorretto    (외부 app-specific prebuilt, 공개 Dockerfile 없음)
 #   runtime  : apachepinot/pinot-base-runtime:11-amazoncorretto  (Amazon Linux 2 / glibc, JDK11 런타임)
 # 계열 매핑:
-#   builder  : amazoncorretto(=Amazon Linux 2, glibc) 빌드 환경은 무거운 maven 빌드 의존성을 그대로 보유 →
-#              상류 pinned base 유지 (빌드 전용 stage 는 교체하지 않는다).
+#   builder  : 원본은 외부 불투명 prebuilt(pinot-base-build)를 빌드 환경으로 쓰지만, 빌드 전용 stage 라도
+#              CI 가 미승인 외부 이미지를 pull 하게 되어 정책상 부적절 → 동등한 표준 공식 base
+#              maven:3.9-eclipse-temurin-11 (maven + JDK11) 로 교체. 프론트엔드 node 는 frontend-maven-plugin 이 자체 다운로드.
 #   runtime  : amazoncorretto runtime(glibc + JDK11) → glibc 계열인 baseimage/ubuntu:24.04 로 교체.
 #              amazoncorretto 가 제공하던 JDK 와 부가 유틸은 apt 로 보정 설치한다.
 # 주의: 원본 runtime stage 의 COPY bin/etc/examples 는 빌드 컨텍스트(=레포의 docker/images/pinot/ 디렉터리)에서
 #       복사한다. CI 빌드 컨텍스트는 wrapped-images 레포이므로, 빌더에서 release-1.2.0 을 git clone 한 뒤
 #       해당 디렉터리를 builder stage 에서 COPY --from 으로 가져온다(태그 고정).
-ARG PINOT_BASE_IMAGE_TAG=11-amazoncorretto
 
-# ── builder (상류 pinned base 유지) ─────────────────────────────────────────────
-FROM apachepinot/pinot-base-build:${PINOT_BASE_IMAGE_TAG} AS pinot_build_env
+# ── builder (표준 공식 maven+JDK11 base — 외부 prebuilt 대체) ────────────────────
+FROM maven:3.9-eclipse-temurin-11 AS pinot_build_env
 
 LABEL MAINTAINER=dev@pinot.apache.org
 
@@ -43,19 +43,15 @@ ARG JDK_VERSION=11
 ARG PINOT_GIT_URL="https://github.com/apache/pinot.git"
 ARG CI=true
 
-RUN echo "Build Pinot based on image: apachepinot/pinot-base-build:${PINOT_BASE_IMAGE_TAG}"
-RUN echo "Current build system CPU arch is [ $(uname -m) ]"
+# git: clone 용 (maven 공식 이미지에 git 미포함).
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
-RUN echo "Trying to build Pinot from [ ${PINOT_GIT_URL} ] on branch [ ${PINOT_BRANCH} ] and CI [ ${CI} ]"
 ENV PINOT_HOME=/opt/pinot
 ENV PINOT_BUILD_DIR=/opt/pinot-build
-ENV MAVEN_HOME /usr/share/maven
-ENV MAVEN_CONFIG /opt/.m2
 
-# 무거운 maven 빌드 — 상류와 동일 경로. 태그(release-1.2.0)를 체크아웃하여 재현성 확보.
-RUN git clone ${PINOT_GIT_URL} ${PINOT_BUILD_DIR} && \
+# 무거운 maven 빌드 — 상류와 동일 경로. 태그(release-1.2.0)를 얕게 클론하여 재현성 확보.
+RUN git clone --depth 1 --branch ${PINOT_BRANCH} ${PINOT_GIT_URL} ${PINOT_BUILD_DIR} && \
     cd ${PINOT_BUILD_DIR} && \
-    git checkout ${PINOT_BRANCH} && \
     mvn install package -DskipTests -Pbin-dist -Pbuild-shaded-jar -Djdk.version=${JDK_VERSION} -T1C && \
     rm -rf /root/.m2 && \
     mkdir -p ${PINOT_HOME}/configs && \
