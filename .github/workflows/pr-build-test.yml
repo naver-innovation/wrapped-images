@@ -92,6 +92,13 @@ jobs:
         with:
           platforms: linux/${{ matrix.arch }}
 
+      - name: Log in to Oracle Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: me-riyadh-1.ocir.io
+          username: ${{ secrets.OCIR_USERNAME }}
+          password: ${{ secrets.OCIR_AUTH_TOKEN }}
+
       - name: Build only (${{ matrix.arch }}, no push)
         uses: docker/build-push-action@v6
         with:
