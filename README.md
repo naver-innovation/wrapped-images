@@ -8,6 +8,44 @@
 
 ---
 
+## 🚀 빠른 시작 — 수행 방법
+
+새 외부 이미지를 OCIR 에 올리는 전체 흐름입니다. (상세는 [§5 기여 흐름](#5-새-이미지-래핑-기여-흐름))
+
+```bash
+# 1) main 에서 작업 브랜치 생성
+git switch main && git pull
+git switch -c feat/wrap-<image>-<tag>
+```
+
+```text
+# 2) Claude Code 에서 /baseimage-oci 로 Dockerfile 작성 (FROM 을 승인 BaseImage 로 래핑)
+/baseimage-oci docker.io/curlimages/curl:8.11.0
+```
+
+```bash
+# 3) 디렉터리 규칙대로 커밋  →  <registry>/<org>/<image>/<tag>/Dockerfile
+#    예: docker.io/curlimages/curl/8.11.0/Dockerfile
+git add <registry>/<org>/<image>/<tag>/Dockerfile
+git commit -m "feat: wrap <image>:<tag> onto baseimage/<base>"
+```
+
+> **4) ⚠️ shared compartment 에 OCIR repository 직접 생성** (필수, 빠뜨리기 쉬움)
+> push 대상 repository(= tag 를 뺀 `<registry>/<org>/<image>` 경로)를 미리 만든다. 자동 생성이 안 되므로 없으면 머지 빌드 push 가 실패한다.
+> 예: `docker.io/curlimages/curl/8.11.0/Dockerfile` → repository `docker.io/curlimages/curl` 생성
+
+```bash
+# 5) PR 생성 → CI 빌드 테스트(pr-build-test, amd64 build-only) 통과 + 리뷰 → main 머지
+#    머지되면 build-and-push-image.yml 이 amd64/arm64 빌드 후 OCIR push
+gh pr create --base main --fill
+```
+
+**6)** 머지 후 **클라우드 이미지 보안검수**(Critical CVE 없음) 통과 → 배포 가능.
+
+> 처음이면 먼저 읽기: [§2 디렉터리 규칙](#2-디렉터리-규칙) · [§4 `/baseimage-oci` 스킬](#4-baseimage-oci-스킬) · [핵심 원칙](#4-4-핵심-원칙-요약)
+
+---
+
 ## 1. 목적
 
 - 외부 이미지의 `FROM` 을 **WASL 팀이 OCIR 에 제공하는 승인 BaseImage** 로 교체(래핑)한 Dockerfile 을 버전·태그별로 보관.
@@ -71,6 +109,18 @@ CI(`.github/workflows/build-and-push-image.yml`)는 `main` push 시 변경된 `*
 > 결과: OCIR 에 **arch-suffix 2개(`-amd64`/`-arm64`) + 멀티아치 manifest(원본 태그)** 가 올라갑니다.
 > ⚠️ amd64 전용 upstream(예: pinpoint)은 빌드 매트릭스를 amd64 로 제한해야 합니다(arm64 빌드 실패 방지).
 
+### 3-1. PR 빌드 테스트 (머지 전 검증)
+
+[`.github/workflows/pr-build-test.yml`](.github/workflows/pr-build-test.yml) 는 **`main` 으로의 PR** 에서
+변경된 Dockerfile 을 **amd64 로만 빌드(push 안 함)** 해서 머지 전에 빌드 가능 여부를 검증합니다.
+
+- **트리거** — `main` 대상 PR 에 `**/Dockerfile` 변경
+- **detect → build-test** — 변경 디렉터리를 감지(`base...head`)해 **amd64 단일 arch** 로 네이티브 빌드. 빌드 실패는 대부분 arch 무관(의존성/GPG/ARG 등)이라 amd64 하나로 잡는다.
+- **amd64 만 빌드하는 이유** — 머지 후 `build-and-push-image.yml` 이 어차피 amd64/arm64 둘 다 빌드한다. PR 에서까지 양쪽을 빌드하면 신규 wrap 당 full 빌드가 4회가 되어 러너 낭비 → PR 은 amd64 단일로 줄이고, **arm64 전용 실패는 머지 빌드에서 잡아 fix-forward** 한다.
+- **push 안 함** — `push: false`, OCIR 인증/`packages: write` 불필요 (테스트 전용)
+- **러너 볼륨 보호** — 빌드 후 `if: always()` 로 `docker buildx prune` / `docker image prune` 실행 → **빌드가 실패해도** 캐시·이미지를 정리한다
+- main 의 GHA 캐시는 `cache-from`(read-only)으로만 재사용하고, 머지 전 PR 은 공유 캐시에 쓰지 않는다(`cache-to` 없음)
+
 ---
 
 ## 4. `/baseimage-oci` 스킬
@@ -129,8 +179,10 @@ Claude Code 에서:
 1. `origin/main` 에서 브랜치 생성 (`feat/wrap-<image>-<tag>`)
 2. `/baseimage-oci <이미지>` 로 Dockerfile 작성 (+ 필요 시 로컬 빌드 테스트)
 3. `<registry>/<org>/<image>/<tag>/Dockerfile` 경로에 커밋
-4. PR 생성 → 리뷰 → `main` 머지 → CI 가 OCIR push
-5. **클라우드 이미지 보안검수**(Critical CVE 없음) 통과 후 배포
+4. **shared compartment 에 OCIR repository 직접 생성** — 머지 시 CI 가 push 할 대상 repository(= tag 를 뺀 `<registry>/<org>/<image>` 경로)를 미리 만들어 둔다. shared compartment 는 push 시 자동 생성이 안 되므로, 없으면 머지 빌드의 push 가 실패한다.
+   - 예: `docker.io/curlimages/curl/8.11.0/Dockerfile` → OCIR repository `docker.io/curlimages/curl` 를 생성
+5. PR 생성 → **CI 빌드 테스트(`pr-build-test`)** 통과 + 리뷰 → `main` 머지 → CI 가 OCIR push
+6. **클라우드 이미지 보안검수**(Critical CVE 없음) 통과 후 배포
 
 ---
 
