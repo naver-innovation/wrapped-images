@@ -141,8 +141,10 @@ Claude Code 에서:
 1. `origin/main` 에서 브랜치 생성 (`feat/wrap-<image>-<tag>`)
 2. `/baseimage-oci <이미지>` 로 Dockerfile 작성 (+ 필요 시 로컬 빌드 테스트)
 3. `<registry>/<org>/<image>/<tag>/Dockerfile` 경로에 커밋
-4. PR 생성 → **CI 빌드 테스트(`pr-build-test`)** 통과 + 리뷰 → `main` 머지 → CI 가 OCIR push
-5. **클라우드 이미지 보안검수**(Critical CVE 없음) 통과 후 배포
+4. **shared compartment 에 OCIR repository 직접 생성** — 머지 시 CI 가 push 할 대상 repository(= tag 를 뺀 `<registry>/<org>/<image>` 경로)를 미리 만들어 둔다. shared compartment 는 push 시 자동 생성이 안 되므로, 없으면 머지 빌드의 push 가 실패한다.
+   - 예: `docker.io/curlimages/curl/8.11.0/Dockerfile` → OCIR repository `docker.io/curlimages/curl` 를 생성
+5. PR 생성 → **CI 빌드 테스트(`pr-build-test`)** 통과 + 리뷰 → `main` 머지 → CI 가 OCIR push
+6. **클라우드 이미지 보안검수**(Critical CVE 없음) 통과 후 배포
 
 ---
 
