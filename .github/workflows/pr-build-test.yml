@@ -1,0 +1,114 @@
+name: 'pr-build-test'
+
+# PR 에서 <repo>/<tag>/Dockerfile 가 변경되면, 해당 이미지를 amd64 로만
+# "빌드만" 해서(push 안 함) Dockerfile 이 실제로 빌드되는지 검증한다.
+# (빌드 실패는 대부분 arch 무관 — 의존성/GPG/ARG 등 — 이라 amd64 단일로 잡는다.
+#  arm64 전용 실패는 머지 후 build-and-push-image.yml 에서 양쪽 빌드 시 잡힌다.)
+# 빌드 산출물/캐시는 테스트 후(성공/실패 무관) 정리해 자가호스트 ARC 러너 볼륨을 보호한다.
+#
+# 디렉토리 규칙은 build-and-push-image.yml 과 동일:
+#   <registry>/<org>/<image>/<tag>/Dockerfile  (Dockerfile 의 상위 디렉토리명 = tag)
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '**/Dockerfile'
+
+concurrency:
+  # 같은 PR 에 새 커밋이 push 되면 진행 중인 이전 빌드 테스트는 취소한다(러너 절약).
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # 1) PR 이 바꾼 Dockerfile 디렉토리를 찾아 빌드 매트릭스를 생성한다.
+  detect:
+    runs-on: arc-amd64
+    outputs:
+      build_matrix: ${{ steps.detect.outputs.build_matrix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed image directories
+        id: detect
+        run: |
+          set -euo pipefail
+          declare -A DIRS
+
+          # 변경 파일이 속한 이미지 디렉토리(= Dockerfile 이 있는 가장 가까운 상위 디렉토리)를 찾는다.
+          add_dir_from_file() {
+            local f="$1" d
+            d=$(dirname "$f")
+            while [[ "$d" != "." && "$d" != "/" ]]; do
+              if [[ -f "$d/Dockerfile" ]]; then DIRS["$d"]=1; return 0; fi
+              d=$(dirname "$d")
+            done
+          }
+
+          # PR 의 자체 변경분만 대상으로 한다 (merge-base...head, 3-dot).
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          while IFS= read -r f; do add_dir_from_file "$f"; done \
+            < <(git diff --name-only "$BASE...$HEAD")
+
+          # 매트릭스 JSON 생성 (jq 의존 없이 직접 구성)
+          build_json="["; fb=1
+          for d in $(printf '%s\n' "${!DIRS[@]}" | sort); do
+            tag="${d##*/}"; image="${d%/*}"
+            # PR 검증은 amd64 단일 arch 로만 (머지 빌드와 중복되는 비용 최소화)
+            [[ $fb -eq 1 ]] && fb=0 || build_json+=","
+            build_json+="{\"dir\":\"$d\",\"image\":\"$image\",\"tag\":\"$tag\",\"arch\":\"amd64\",\"runner\":\"arc-amd64\"}"
+          done
+          build_json+="]"
+
+          echo "build_matrix=$build_json" >> "$GITHUB_OUTPUT"
+          if [[ ${#DIRS[@]} -eq 0 ]]; then
+            echo "변경된 이미지 없음 — 빌드 테스트 skip"
+          else
+            echo "Detected images:"; printf '%s\n' "${!DIRS[@]}" | sort | sed 's/^/  - /'
+          fi
+
+  # 2) amd64 네이티브 러너에서 빌드만(push 안 함) 수행하고, 끝나면 항상 정리한다.
+  build-test:
+    needs: detect
+    if: needs.detect.outputs.build_matrix != '[]'
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.detect.outputs.build_matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          platforms: linux/${{ matrix.arch }}
+
+      - name: Build only (${{ matrix.arch }}, no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.dir }}
+          file: ${{ matrix.dir }}/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          push: false
+          load: false
+          # main 의 빌드 캐시는 읽어서 속도만 높이고(read-only),
+          # 머지 전 PR 이 공유 캐시를 오염시키지 않도록 cache-to 는 쓰지 않는다.
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          provenance: false
+          sbom: false
+
+      # 성공/실패와 무관하게 러너 볼륨에 남은 빌드 캐시·이미지를 정리한다.
+      - name: Clean up build artifacts (always)
+        if: always()
+        run: |
+          docker buildx prune --all --force || true
+          docker image prune --all --force || true
