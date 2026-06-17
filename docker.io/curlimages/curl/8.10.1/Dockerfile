@@ -1,0 +1,104 @@
+# 원본: docker.io/curlimages/curl:8.10.1
+#   curl/curl-docker 공개 history 는 8.1.1 근처에서 멈춰 있어 8.10.1 Dockerfile 기준점을
+#   특정하기 어렵다. 이 파일은 기존 wrapped-images 의 curl 7.85.0 래핑 패턴을 유지하고,
+#   curl 8.10.1 릴리스 태그(curl-8_10_1)를 직접 체크아웃해 소스 빌드한다.
+# 기준 패턴:
+#   docker.io/curlimages/curl/7.85.0/Dockerfile
+# 계열 매핑: alpine → baseimage/alpine  (musl 유지 — curl 바이너리/libcurl.so 가 musl ABI 링크, glibc 계열 교체 불가)
+# 원본은 curl 을 소스 빌드(curl-8_10_1 태그)하여 libcurl.so + curl 바이너리만 런타임에 복사한다.
+#   원본 builder 의 vendored 소스 트리(COPY "curl" /src/curl)를 태그 고정 git clone 으로 대체(벤더링 회피).
+# entrypoint.sh 는 원본과 동일 내용을 인라인(추가 벤더 파일 불필요).
+ARG CURL_RELEASE_TAG=curl-8_10_1
+ARG CURL_RELEASE_VERSION=8_10_1
+ARG CURL_GIT_REPO=https://github.com/curl/curl.git
+
+# ── builder ───────────────────────────────────────────────────────────────────
+FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/alpine:3.23 AS builder
+# baseimage/alpine 은 기본 USER 가 비루트 → apk/빌드 위해 root 로 전환
+USER root
+
+ARG CURL_RELEASE_TAG
+ARG CURL_GIT_REPO
+# curl 7.85 부터 TLS 백엔드를 명시하지 않으면 configure 가 실패한다(원본 curl-docker 는
+# 빌드 시스템이 CURL_CONFIGURE_OPTION 을 주입). 설치된 라이브러리에 맞춰 기본값을 지정.
+ARG CURL_CONFIGURE_OPTION="--with-openssl --with-libssh2 --with-nghttp2 --with-brotli --enable-ipv6"
+
+# 원본 builder 패키지 + git(clone 용) + 빌드용 -dev 헤더(openssl/nghttp2/zlib).
+RUN apk add --no-cache \
+        git \
+        libssh2 libssh2-dev libssh2-static \
+        autoconf automake build-base \
+        groff openssl openssl-dev curl-dev \
+        python3 python3-dev \
+        libtool curl stunnel perl \
+        nghttp2 nghttp2-dev zlib-dev brotli brotli-dev
+
+# 태그 고정 소스 체크아웃 (원본의 vendored COPY "curl" 대체)
+RUN git clone --depth 1 --branch ${CURL_RELEASE_TAG} ${CURL_GIT_REPO} /src/curl
+WORKDIR /src/curl
+
+# 원본과 동일: curl.se 의 CA 번들 취득
+RUN curl https://curl.haxx.se/ca/cacert.pem -L -o /cacert.pem
+
+# 원본과 동일한 빌드 경로 (make test 는 원본에서 주석 처리됨)
+RUN ./buildconf && \
+    autoreconf -vif && \
+    ./configure ${CURL_CONFIGURE_OPTION} && \
+    make -j"$(nproc)" && \
+    make DESTDIR="/alpine/" install -j"$(nproc)"
+
+# ── runtime ─────────────────────────────────────────────────────────────────
+FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/alpine:3.23
+LABEL org.opencontainers.image.source=https://github.com/curl/curl-docker
+LABEL org.opencontainers.image.description="curl - command line tool and library for transferring data with URLs"
+LABEL org.opencontainers.image.licenses=MIT
+# 원본 LABEL 보존
+LABEL Maintainer="James Fuller <jim.fuller@webcomposite.com>"
+LABEL Name="curl"
+
+ARG CURL_RELEASE_TAG
+ARG CURL_RELEASE_VERSION
+ARG CURL_GIT_REPO
+ENV CURL_VERSION=${CURL_RELEASE_VERSION}
+ENV CURL_RELEASE_TAG=${CURL_RELEASE_TAG}
+ENV CURL_GIT_REPO=${CURL_GIT_REPO}
+
+# baseimage/alpine 은 기본 USER 가 비루트 → apk/유저생성/심볼릭링크 위해 root 로 전환 (런타임은 마지막에 curl_user 로 복귀)
+USER root
+
+# 원본 런타임 의존 패키지
+RUN apk upgrade && \
+    apk add --no-cache brotli brotli-dev libssh2 nghttp2-dev && \
+    rm -fr /var/cache/apk/*
+
+# 원본과 동일: 비루트 curl_user / curl_group (adduser -S 시스템 계정)
+RUN addgroup -S curl_group && adduser -S curl_user -G curl_group
+
+# builder 에서 빌드한 curl 설치물 복사 (원본과 동일 경로)
+COPY --from=builder /alpine/usr/local/lib/libcurl.so.4.8.0 /usr/lib/
+COPY --from=builder /alpine/usr/local/bin/curl /usr/bin/curl
+COPY --from=builder /alpine/usr/local/include/curl /usr/include/curl
+
+# 명시적 심볼릭 링크 (libcurl.so.4.8.0 == curl 8.10.1 soname).
+# baseimage/alpine 은 자체 libcurl 이 있어 libcurl.so.4 가 이미 존재 → -f 로 우리 빌드본으로 덮어쓴다
+# (원본 curl-docker 는 clean alpine 이라 -s 만으로 충분했음).
+RUN ln -sf /usr/lib/libcurl.so.4.8.0 /usr/lib/libcurl.so.4 && \
+    ln -sf /usr/lib/libcurl.so.4 /usr/lib/libcurl.so
+
+# CA 번들
+COPY --from=builder /cacert.pem /cacert.pem
+ENV CURL_CA_BUNDLE="/cacert.pem"
+
+# 원본 entrypoint.sh 동일 내용 인라인 (MIT, James Fuller)
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    'set -e' \
+    'if [ "${1#-}" != "${1}" ] || [ -z "$(command -v "${1}")" ]; then' \
+    '  set -- curl "$@"' \
+    'fi' \
+    'exec "$@"' \
+    > /entrypoint.sh && chmod +x /entrypoint.sh
+
+USER curl_user
+CMD ["curl"]
+ENTRYPOINT ["/entrypoint.sh"]
