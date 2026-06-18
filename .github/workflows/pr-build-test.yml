@@ -1,7 +1,8 @@
 name: 'pr-build-test'
 
 # PR 에서 <repo>/<tag>/Dockerfile 가 변경되면, 해당 이미지를 amd64 로만
-# "빌드만" 해서(push 안 함) Dockerfile 이 실제로 빌드되는지 검증한다.
+# "빌드만" 해서(push 안 함) Dockerfile 이 실제로 빌드되는지 검증하고, 빌드된 이미지를
+# Trivy 로 CVE 스캔(리포트 전용 — PR 을 실패시키지 않고 job summary 에 표로 남김)한다.
 # (빌드 실패는 대부분 arch 무관 — 의존성/GPG/ARG 등 — 이라 amd64 단일로 잡는다.
 #  arm64 전용 실패는 머지 후 build-and-push-image.yml 에서 양쪽 빌드 시 잡힌다.)
 # 빌드 산출물/캐시는 테스트 후(성공/실패 무관) 정리해 자가호스트 ARC 러너 볼륨을 보호한다.
@@ -106,14 +107,46 @@ jobs:
           file: ${{ matrix.dir }}/Dockerfile
           platforms: linux/${{ matrix.arch }}
           push: false
-          load: false
+          # CVE 스캔을 위해 로컬 docker 데몬에 적재한다 (amd64 단일이라 load 가능).
+          load: true
+          tags: pr-build-test-candidate:${{ matrix.tag }}
           # main 의 빌드 캐시는 읽어서 속도만 높이고(read-only),
           # 머지 전 PR 이 공유 캐시를 오염시키지 않도록 cache-to 는 쓰지 않는다.
           cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
           provenance: false
           sbom: false
 
-      # 성공/실패와 무관하게 러너 볼륨에 남은 빌드 캐시·이미지를 정리한다.
+      # 빌드된 이미지의 CVE 를 스캔한다 — 리포트 전용(발견돼도 PR 을 실패시키지 않음).
+      # 권위 있는 게이트는 사내 "클라우드 이미지 보안검수"; 여기서는 머지 전 조기 가시성만 제공한다.
+      - name: Trivy CVE scan (report only)
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true   # DB 다운로드 실패 등 스캔 자체 오류도 PR 을 막지 않도록
+        with:
+          image-ref: pr-build-test-candidate:${{ matrix.tag }}
+          scan-type: image
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: false
+          exit-code: '0'          # 취약점이 있어도 종료코드 0 (리포트 전용)
+          output: trivy-report.txt
+        env:
+          # 러너 영속 볼륨이 아닌 임시 경로에 DB 캐시 (볼륨 보호)
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/.trivy
+
+      - name: Publish CVE report to job summary
+        if: always()
+        run: |
+          {
+            echo "### 🔎 Trivy CVE scan — \`${{ matrix.image }}:${{ matrix.tag }}\` (amd64, report-only)"
+            echo ""
+            echo '```'
+            cat trivy-report.txt 2>/dev/null || echo "(스캔 리포트 없음 — 위 스캔 스텝 로그 확인)"
+            echo '```'
+            echo ""
+            echo "> ⚠️ 조기 경고용. 최종 차단 게이트는 사내 클라우드 이미지 보안검수다."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 성공/실패와 무관하게 러너 볼륨에 남은 빌드 캐시·이미지(적재한 스캔 대상 포함)를 정리한다.
       - name: Clean up build artifacts (always)
         if: always()
         run: |
