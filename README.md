@@ -117,8 +117,9 @@ CI(`.github/workflows/build-and-push-image.yml`)는 `main` push 시 변경된 `*
 - **트리거** — `main` 대상 PR 에 `**/Dockerfile` 변경
 - **detect → build-test** — 변경 디렉터리를 감지(`base...head`)해 **amd64 단일 arch** 로 네이티브 빌드. 빌드 실패는 대부분 arch 무관(의존성/GPG/ARG 등)이라 amd64 하나로 잡는다.
 - **amd64 만 빌드하는 이유** — 머지 후 `build-and-push-image.yml` 이 어차피 amd64/arm64 둘 다 빌드한다. PR 에서까지 양쪽을 빌드하면 신규 wrap 당 full 빌드가 4회가 되어 러너 낭비 → PR 은 amd64 단일로 줄이고, **arm64 전용 실패는 머지 빌드에서 잡아 fix-forward** 한다.
-- **push 안 함** — `push: false`, OCIR 인증/`packages: write` 불필요 (테스트 전용)
-- **러너 볼륨 보호** — 빌드 후 `if: always()` 로 `docker buildx prune` / `docker image prune` 실행 → **빌드가 실패해도** 캐시·이미지를 정리한다
+- **CVE 스캔 (리포트 전용)** — 빌드된 이미지를 `load` 해 **Trivy** 로 CRITICAL/HIGH 스캔 → 결과를 **job summary 에 표로** 남긴다. **PR 을 실패시키지 않는다**(`continue-on-error`, `exit-code: 0`). 조기 경고용일 뿐, 최종 차단 게이트는 사내 **클라우드 이미지 보안검수**다.
+- **push 안 함** — `push: false`. 단, **베이스 이미지(`baseimage/*`)가 private OCIR** 라 빌드 시 pull 을 위해 OCIR 로그인은 필요(`OCIR_USERNAME`/`OCIR_AUTH_TOKEN`). push 가 없으니 `packages: write` 는 불필요.
+- **러너 볼륨 보호** — 빌드/스캔 후 `if: always()` 로 `docker buildx prune` / `docker image prune` 실행 → **빌드가 실패해도** 캐시·적재 이미지를 정리한다. Trivy DB 도 영속 볼륨이 아닌 `runner.temp` 에 캐시한다.
 - main 의 GHA 캐시는 `cache-from`(read-only)으로만 재사용하고, 머지 전 PR 은 공유 캐시에 쓰지 않는다(`cache-to` 없음)
 
 ---
