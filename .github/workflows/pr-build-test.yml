@@ -125,29 +125,17 @@ jobs:
         with:
           image-ref: pr-build-test-candidate:${{ matrix.tag }}
           scan-type: image
-          format: table
+          format: json
           severity: CRITICAL,HIGH
           ignore-unfixed: false
           exit-code: '0'          # 취약점이 있어도 종료코드 0 (리포트 전용)
-          output: trivy-report.txt
+          output: trivy-report.json
         env:
           # 러너 영속 볼륨이 아닌 임시 경로에 DB 캐시 (볼륨 보호)
           TRIVY_CACHE_DIR: ${{ runner.temp }}/.trivy
 
-      - name: Publish CVE report to job summary
-        if: always()
-        run: |
-          {
-            echo "### 🔎 Trivy CVE scan — \`${{ matrix.image }}:${{ matrix.tag }}\` (amd64, report-only)"
-            echo ""
-            echo '```'
-            cat trivy-report.txt 2>/dev/null || echo "(스캔 리포트 없음 — 위 스캔 스텝 로그 확인)"
-            echo '```'
-            echo ""
-            echo "> ⚠️ 조기 경고용. 최종 차단 게이트는 사내 클라우드 이미지 보안검수다."
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      # CVE 리포트를 PR 코멘트로도 게시한다(마커 기반 upsert — 재실행 시 중복 코멘트 대신 갱신).
+      # Trivy JSON 리포트를 파싱해 (1) CRITICAL/HIGH 카운트 요약, (2) CRITICAL 존재 시
+      # promotion 실패 경고, (3) 상세 표를 만들어 PR 코멘트(마커 upsert)와 job summary 에 게시한다.
       - name: Post CVE report as PR comment
         if: always()
         uses: actions/github-script@v7
@@ -157,14 +145,64 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            let report = '';
-            try { report = fs.readFileSync('trivy-report.txt', 'utf8').trim(); } catch (e) {}
-            if (!report) report = '(CRITICAL/HIGH 취약점 없음 또는 스캔 리포트 없음 — Actions 로그 확인)';
-            // GitHub 코멘트 65536자 제한 대비 절단
-            if (report.length > 60000) report = report.slice(0, 60000) + '\n... (생략 — 전체는 job summary 참고)';
             const image = process.env.IMAGE, tag = process.env.TAG;
+
+            // Trivy JSON 파싱 (스캔 실패/DB 오류 시 파일이 없을 수 있음)
+            let data = null;
+            try { data = JSON.parse(fs.readFileSync('trivy-report.json', 'utf8')); } catch (e) {}
+
+            let crit = 0, high = 0;
+            const rows = [];
+            if (data && Array.isArray(data.Results)) {
+              for (const r of data.Results) {
+                for (const v of (r.Vulnerabilities || [])) {
+                  if (v.Severity === 'CRITICAL') crit++;
+                  else if (v.Severity === 'HIGH') high++;
+                  rows.push({
+                    sev: v.Severity || '',
+                    pkg: v.PkgName || (r.Target || ''),
+                    id: v.VulnerabilityID || '',
+                    installed: v.InstalledVersion || '',
+                    fixed: v.FixedVersion || '',
+                  });
+                }
+              }
+            }
+            const total = rows.length;
+            const ord = { CRITICAL: 0, HIGH: 1 };
+            rows.sort((a, b) => (ord[a.sev] ?? 9) - (ord[b.sev] ?? 9));
+
             const marker = `<!-- trivy-cve-report:${image} -->`;
-            const body = `${marker}\n### 🔎 Trivy CVE scan — \`${image}:${tag}\` (amd64, report-only)\n\n<details><summary>CRITICAL / HIGH 결과 펼치기</summary>\n\n\`\`\`\n${report}\n\`\`\`\n</details>\n\n> ⚠️ 조기 경고용 — 최종 차단 게이트는 사내 클라우드 이미지 보안검수입니다.`;
+            let body = `${marker}\n### 🔎 Trivy CVE scan — \`${image}:${tag}\` (amd64, report-only)\n\n`;
+
+            if (!data) {
+              body += `> ⚠️ 스캔 리포트를 읽지 못했습니다 (스캔 실패 또는 Trivy DB 다운로드 실패) — Actions 로그를 확인하세요.\n`;
+            } else {
+              body += `**🔴 CRITICAL: ${crit} · 🟠 HIGH: ${high} · 총 ${total}건**\n\n`;
+              if (crit > 0) {
+                body += `> 🚨 **CRITICAL ${crit}건 발견** — 이 이미지는 보안검수 / 이미지 promotion 과정에서 **실패할 수 있습니다**. `;
+                body += `머지·배포 전 CVE 해결(업스트림 버전 업그레이드 등)을 부탁드립니다.\n\n`;
+              } else if (total === 0) {
+                body += `✅ CRITICAL/HIGH 취약점이 발견되지 않았습니다.\n\n`;
+              }
+              if (total > 0) {
+                const cap = 80;
+                const shown = rows.slice(0, cap);
+                body += `<details><summary>CRITICAL / HIGH 상세 펼치기 (${total}건)</summary>\n\n`;
+                body += `| Severity | Package | CVE | Installed | Fixed |\n|---|---|---|---|---|\n`;
+                for (const r of shown) {
+                  body += `| ${r.sev} | \`${r.pkg}\` | ${r.id} | ${r.installed} | ${r.fixed || '-'} |\n`;
+                }
+                if (total > cap) body += `\n... 외 ${total - cap}건 (전체는 Actions 로그 / job summary 참고)\n`;
+                body += `\n</details>\n`;
+              }
+            }
+            body += `\n> ⚠️ 리포트 전용 — PR 을 실패시키지 않습니다. 최종 차단 게이트는 사내 클라우드 이미지 보안검수입니다.`;
+
+            // job summary 에도 동일 내용 기록
+            try { if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, body + '\n'); } catch (e) {}
+
+            // PR 코멘트 upsert (마커로 기존 코멘트 찾아 갱신, 없으면 생성)
             const { owner, repo } = context.repo;
             const issue_number = context.payload.pull_request.number;
             const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
