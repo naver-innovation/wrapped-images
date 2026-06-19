@@ -80,6 +80,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
+      pull-requests: write   # Trivy CVE 리포트를 PR 코멘트로 게시(upsert)하기 위함
     strategy:
       fail-fast: false
       matrix:
@@ -145,6 +146,34 @@ jobs:
             echo ""
             echo "> ⚠️ 조기 경고용. 최종 차단 게이트는 사내 클라우드 이미지 보안검수다."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # CVE 리포트를 PR 코멘트로도 게시한다(마커 기반 upsert — 재실행 시 중복 코멘트 대신 갱신).
+      - name: Post CVE report as PR comment
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          IMAGE: ${{ matrix.image }}
+          TAG: ${{ matrix.tag }}
+        with:
+          script: |
+            const fs = require('fs');
+            let report = '';
+            try { report = fs.readFileSync('trivy-report.txt', 'utf8').trim(); } catch (e) {}
+            if (!report) report = '(CRITICAL/HIGH 취약점 없음 또는 스캔 리포트 없음 — Actions 로그 확인)';
+            // GitHub 코멘트 65536자 제한 대비 절단
+            if (report.length > 60000) report = report.slice(0, 60000) + '\n... (생략 — 전체는 job summary 참고)';
+            const image = process.env.IMAGE, tag = process.env.TAG;
+            const marker = `<!-- trivy-cve-report:${image} -->`;
+            const body = `${marker}\n### 🔎 Trivy CVE scan — \`${image}:${tag}\` (amd64, report-only)\n\n<details><summary>CRITICAL / HIGH 결과 펼치기</summary>\n\n\`\`\`\n${report}\n\`\`\`\n</details>\n\n> ⚠️ 조기 경고용 — 최종 차단 게이트는 사내 클라우드 이미지 보안검수입니다.`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
 
       # 성공/실패와 무관하게 러너 볼륨에 남은 빌드 캐시·이미지(적재한 스캔 대상 포함)를 정리한다.
       - name: Clean up build artifacts (always)
