@@ -33,8 +33,8 @@ RUN git clone --depth 1 --branch ${GIT_TAG} https://github.com/argoproj/argo-rol
 RUN go mod download
 # 원본 argo-rollouts-build stage: make 가 UI 를 재빌드하지 않도록 UI dist 마커 생성.
 # (컨트롤러 바이너리는 UI 를 임베드하지 않으므로 yarn UI 빌드 불필요)
-RUN touch ui/dist/node_modules.marker && \
-    mkdir -p ui/dist/app && \
+RUN mkdir -p ui/dist/app && \
+    touch ui/dist/node_modules.marker && \
     touch ui/dist/app/index.html
 # 정적 빌드 (make controller → CGO_ENABLED=0 go build ./cmd/rollouts-controller) — 원본과 동일.
 RUN make controller
