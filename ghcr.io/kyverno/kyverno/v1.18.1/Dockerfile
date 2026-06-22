@@ -19,5 +19,6 @@ LABEL org.opencontainers.image.source=https://github.com/kyverno/kyverno
 LABEL org.opencontainers.image.description="Kyverno admission controller (v1.18.1)"
 LABEL org.opencontainers.image.licenses=Apache-2.0
 COPY --from=builder /out/kyverno /bin/kyverno
-USER 65534
+# 원본 distroless nonroot 와 동일한 uid 65532 로 실행 (이전 65534 는 원본과 불일치)
+USER 65532
 ENTRYPOINT ["/bin/kyverno"]
