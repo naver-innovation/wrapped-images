@@ -140,11 +140,15 @@ RUN if getent group "$ARGOCD_USER_ID" >/dev/null && [ "$(getent group "$ARGOCD_U
     chown argocd:0 /home/argocd && \
     chmod g=u /home/argocd
 
-# 원본 런타임 패키지. 24.04 는 별도 backports 없이 git/git-lfs/tini/gpg/tzdata/connect-proxy 제공.
+# 원본 런타임 패키지. 24.04 는 별도 backports 없이 git/git-lfs/tini/gnupg/tzdata/connect-proxy 제공.
+# 주의: 최소 패키지 `gpg` 가 아니라 메타패키지 `gnupg` 를 설치한다. `gpg` 만 깔면 gpg-agent·dirmngr 가
+#       빠져서, repo-server 의 gpg 키 생성(`gpg --gen-key` → gpg-agent)이
+#       `error running '/usr/bin/gpg-agent': probably not installed / No agent running` 으로 실패해
+#       repo-server 가 크래시한다. 원본 argocd 이미지도 gnupg(gpg-agent 포함)를 쓴다.
 RUN apt-get update && \
     apt-get dist-upgrade -y && \
     apt-get install -y --no-install-recommends \
-    git git-lfs tini gpg tzdata connect-proxy && \
+    git git-lfs tini gnupg tzdata connect-proxy && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
