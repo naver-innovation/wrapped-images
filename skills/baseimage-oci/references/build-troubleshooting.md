@@ -27,6 +27,19 @@
 
 > **핵심 안전 전략**: 원본 Dockerfile 을 **스테이지·명령·base 태그까지 그대로 옮기고**, (a) *출하* stage 의 `FROM` 만 승인 base 로 교체, (b) 위 idempotent(`ln -sf`/`mkdir -p`)·`USER root`·주입 ARG 보정만 추가한다. 원본 명령을 임의로 단순화하거나 스테이지를 합치지 않는다.
 
+## 런타임 실행 실패 (빌드는 성공하는데 컨테이너가 기동 직후 죽는 경우)
+
+래핑은 빌드만 통과하면 끝이 아니다. base 교체로 **실행 유저·CWD·libc 가 원본과 달라지면** 빌드는 성공해도 런타임에 죽는다. 빌드 로그가 아니라 **파드/컨테이너 로그**에서 잡힌다.
+
+| 증상 (컨테이너/파드 로그) | 원인 | 해결 |
+|---|---|---|
+| `exec /<binary>: no such file or directory` (바이너리는 `ls` 로 보이는데도) | **glibc 동적 링크 바이너리를 musl `baseimage/alpine` 에서 실행** → loader `/lib64/ld-linux-*` 부재. GitHub release(GoReleaser) tarball 바이너리에서 흔하다 | 원본처럼 **소스에서 `CGO_ENABLED=0` 정적 빌드**(golang 빌더 → alpine COPY) 권장, 또는 glibc base(`baseimage/ubuntu`). 확인: `readelf -l <bin> \| grep interp` / `qemu-*: Could not open '/lib64/ld-linux-*'` |
+| `stat <dir>/: permission denied` / `the path "<dir>/" cannot be accessed` (상대경로) | 원본은 **root + WORKDIR=/** 로 돌았는데 wrap 이 USER/WORKDIR 를 안 맞춰 **비루트(uid 500/1000) + CWD=/root(0700)** 로 실행 → 상대경로가 풀리는 `/root` 를 비루트가 traverse 못 함 | 런타임 stage 에 원본과 동일하게 **`USER root` + `WORKDIR /`** 명시 (원본 USER 는 `docker inspect --format '{{.Config.User}} {{.Config.WorkingDir}}' <원본>` 으로 확인; 빈 값/`0`=root) |
+| `... has runAsNonRoot and image will run as root` (파드 기동 실패) | 원본은 비루트인데 wrap 이 빌드용 `USER root` 후 **원본 비루트 USER 로 복귀 안 함** → 차트의 `runAsNonRoot` 정책과 충돌 | 런타임 stage 끝에서 **원본의 정확한 비루트 uid 로 복원** |
+| 권한/소유권 관련 동작 이상 (uid 는 비루트인데 원본과 다른 값) | 원본 비루트 uid 와 **다른 uid** 로 설정(예: 65532↔65534, nobody↔다른 번호) | 원본 uid 와 정확히 일치 (이름 USER 는 `getent passwd <name>` 로 숫자까지 대조) |
+
+> **예외 — 의도적 비루트는 그대로 둔다**: `redis`·`zookeeper` 등 공식 이미지는 entrypoint 가 `uid≠0` 를 감지해 root 권한강하(`gosu`)를 건너뛰고 그대로 실행하도록 설계돼 있고, 데이터 디렉터리도 빌드 때 미리 chown 한다. 이런 이미지는 wrap 이 비루트로 실행해도 정상이므로 `USER root` 로 되돌리지 말 것. entrypoint 의 uid 분기를 먼저 확인한다.
+
 ## 패키지 매니저 전환
 
 | 원본 계열 | 원본 명령 | navix(RHEL) 대응 |
