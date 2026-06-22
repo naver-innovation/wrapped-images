@@ -64,7 +64,11 @@ WASL 팀이 OCIR 에 제공하는 base image 3종. 원본 이미지와 **같은 
    - 원본이 clean alpine/scratch 를 가정해 쓴 `ln -s`, `mkdir` 를 그대로 옮기면 `File exists` 로 실패한다.
    - **고정 uid/gid 가 base 에 이미 선점돼 있을 수 있다**: `baseimage/ubuntu:24.04` 는 **uid/gid 1000=`ubuntu` 유저**, `baseimage/navix` 는 **999** 등. `useradd --uid 1000` 가 실패하고 `|| true` 로 삼켜지면 정작 유저가 안 만들어져 **다음 `chown` 이 깨진다.** → 충돌 계정을 먼저 제거(`userdel -r ubuntu || true`)하고 원하는 uid 로 만들거나, 고정 id 를 포기하고 폴백(`useradd --uid N ... || useradd ...`). 생성 후 유저 존재를 보장하고 chown.
    - 단순히 `... || true` 로 덮지 말 것 — 실패가 **뒤 단계에서** 터진다. (로컬 빌드 테스트로 zookeeper/mysql 에서 실제로 잡힌 사례.)
-2. **기본 USER 가 비루트다** (`baseimage/alpine`·`ubuntu` 모두). 패키지 설치·빌드·시스템 파일 수정 단계 **앞에 `USER root`**, 런타임 stage 끝에서 원본의 비루트 USER 로 복귀.
+2. **런타임 USER·WORKDIR 를 원본과 "일치"시킨다 (단정 금지 — `docker inspect` 로 확인).** baseimage 기본 USER 는 **비루트**(alpine=uid 500, ubuntu=uid 1000)이고 기본 **WORKDIR 는 `/root`(0700)** 다. 설치·시스템수정 단계 앞에 `USER root`, **런타임 stage 끝에서는 막연히 "비루트로 복귀"가 아니라 원본의 실제 USER/WORKDIR 로 복원**한다.
+   - **원본이 root 로 실행**(distroless/static 의 비-nonroot 태그, scratch 등은 USER 미지정 = root)이면 런타임 stage 에 **`USER root` + `WORKDIR /` 를 명시**해야 한다. 빼먹으면 비루트(uid 500/1000)로 떨어지고, 게다가 CWD 가 `/root`(0700)라 비루트가 traverse 못 해 `kubectl apply -f crds/` 같은 **상대경로가 `stat: permission denied`** 로 죽는다. (driver-crds·argo-events 실측)
+   - **원본이 비루트면 그 "정확한 uid"** 로 맞춘다 — 비슷한 값으로 대충 쓰지 말 것(예: kyverno 원본 65532 를 65534 로 잘못 써 불일치한 사례).
+   - 확인: `docker inspect --format '{{.Config.User}} {{.Config.WorkingDir}}' <원본>` (User 가 빈 값/`0` = root). 이름 USER(`nobody` 등)는 `getent passwd <name>` 로 숫자 uid 까지 대조.
+   - **예외**: `redis`·`zookeeper` 등 공식 이미지는 entrypoint 가 uid≠0 를 감지해 권한강하(`gosu`)를 건너뛰고 그대로 도는 설계라 **의도적 비루트가 정상**이다(데이터 디렉터리도 빌드 때 미리 chown). entrypoint 동작을 확인하고 무턱대고 `USER root` 강제하지 말 것.
 3. **원본 multi-stage 구조를 충실히 보존한다 — 스테이지를 합치지(collapse) 마라.**
    - 빌드 전용(throwaway) 스테이지는 **원본 pinned base(golang/node 등)를 그대로 유지**해도 된다. 정책 대상은 *출하되는* 런타임 stage 뿐이다.
    - 각 언어 빌더는 **그 언어 전용 base** 를 써라(JS→`node:*`, Go→`golang:*`). 빌더 base 를 임의 계열로 바꾸거나 패키지 매니저를 바꾸면(yarn berry↔classic 등) 툴체인이 깨진다.
@@ -76,6 +80,10 @@ WASL 팀이 OCIR 에 제공하는 base image 3종. 원본 이미지와 **같은 
    - `hkp://...`(포트 11371)·`hkp://...:80` 키서버는 빌드 네트워크에서 자주 차단되어 `keyserver receive failed` 로 깨진다 → **벤더가 HTTPS 로 배포하는 키 파일**을 우선 import (`wget -O- https://<vendor>/<key>.key | gpg --batch --import`). 키서버가 꼭 필요하면 HTTPS 웹 조회(`https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x<KEYID>`).
    - **원본 Dockerfile 이 명시한 keyid 를 맹신하지 마라.** 그 키가 폐기(revoked)됐거나, 벤더가 키를 로테이션·재서명해 **아티팩트의 실제 서명자가 다른 키**일 수 있다 (예: telegraf 1.25.0 `.deb.asc` 실제 서명자는 `influxdata-archive_compat.key`, 원본이 받던 `05CE…` 구키 아님). 의심되면 `gpg --list-packets <file>.asc | grep issuer` 로 실제 서명자를 확인하거나, 벤더 HTTPS 키를 import 후 `gpg --verify` 가 통과하는 키를 쓰고 fingerprint 로 핀한다.
    - 서명 검증(`gpg --verify`)은 그대로 유지. 패키지·바이너리 다운로드도 HTTPS 우선.
+9. **다운로드한 release 바이너리는 base 의 libc(musl/glibc)와 맞아야 한다 — 안 맞으면 빌드는 통과해도 런타임에 죽는다.** distroless/static·scratch 원본은 **자체 빌드한 "정적" 바이너리**를 담는다. 그런데 GitHub **release(GoReleaser) tarball 바이너리는 glibc 동적 링크인 경우가 많다.** 그걸 musl 인 `baseimage/alpine` 에 넣으면 loader(`/lib64/ld-linux-*`) 부재로 파일이 있는데도 **`exec /<bin>: no such file or directory`** 로 죽는다(=loader 가 "없는 파일"). 해결(우선순위):
+   - **원본처럼 소스에서 `CGO_ENABLED=0` 정적 빌드** (golang 빌더 stage → alpine 런타임에 COPY) — 가장 충실·안전하고 musl/glibc 무관. (repo 의 kyverno·kube-state-metrics wrap 패턴)
+   - 또는 glibc base(`baseimage/ubuntu`)로 교체. 단 release-binary 다운로드 + `baseimage/ubuntu` 의 `bash -o pipefail` + GNU 도구 조합은 CI 에서 불안정할 수 있으니 **가급적 소스 빌드를 우선**한다.
+   - 확인: `docker run --rm <base> sh -c 'readelf -l <bin> | grep -i interp'` (INTERP 있으면 동적 → musl alpine 부적합), 또는 `docker run --platform <arch> ... <bin>` 실행 시 `qemu-*: Could not open '/lib64/ld-linux-*'` 메시지로 확정.
 
 > **안전 기본기**: 원본 Dockerfile 을 **스테이지·명령·base 태그까지 그대로 옮기되**, (a) *출하* stage 의 `FROM` 만 승인 base 로 교체, (b) 위 idempotent/`USER root`/ARG 보정만 추가하는 방식이 한 번에 통과할 확률이 가장 높다. 증상별 대응표: [references/build-troubleshooting.md](references/build-troubleshooting.md)
 
