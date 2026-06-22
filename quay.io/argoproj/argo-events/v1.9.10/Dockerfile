@@ -56,6 +56,11 @@ RUN set -eux; \
 
 # ── runtime (원본 argo-events stage) ────────────────────────────────────────────
 FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/alpine:3.23
+# 원본 scratch 런타임은 USER 미지정 = root + WorkingDir=/ 로 실행된다. baseimage/alpine 기본은
+# 비루트(USER=waslteam, uid 500) + WorkingDir=/root 라, 그대로 두면 원본과 실행 유저/CWD 가 달라진다.
+# → 원본 런타임 컨텍스트(root, /)를 복원한다.
+WORKDIR /
+USER root
 LABEL org.opencontainers.image.source=https://github.com/argoproj/argo-events
 LABEL org.opencontainers.image.description="argo-events - Argo Events controller/executor"
 LABEL org.opencontainers.image.licenses=Apache-2.0
