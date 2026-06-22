@@ -28,7 +28,12 @@ RUN apk add --no-cache curl && \
     chmod +x kubectl
 
 FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/alpine:3.23
-# 원본은 distroless/static (non-root) → 별도 패키지/파일 작업 없이 산출물만 COPY (USER 변경 불필요)
+# 원본 distroless/static 은 root(uid 0) + WorkingDir=/ 로 실행된다. baseimage/alpine 기본은
+# 비루트(USER=waslteam) + WorkingDir=/root 라, 차트가 `kubectl apply -f crds/` 를 호출하면
+# CWD=/root(0700 root) 를 비루트가 traverse 못 해 `stat crds/: permission denied` 로 죽는다.
+# → 원본 런타임 컨텍스트(root, /)를 복원한다.
+WORKDIR /
+USER root
 LABEL org.opencontainers.image.source=https://github.com/kubernetes-sigs/secrets-store-csi-driver
 LABEL org.opencontainers.image.description="Secrets Store CSI Driver CRDs installer (wrapped on approved OCIR alpine baseimage)"
 LABEL org.opencontainers.image.licenses=Apache-2.0
