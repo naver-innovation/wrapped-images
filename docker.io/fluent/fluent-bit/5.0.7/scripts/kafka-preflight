@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Fluent Bit sidecar 가 전송할 Kafka broker 들에 metadata 요청을 보내 접속 가능 여부를
+# 검증한다. PREFLIGHT_TOPICS 환경변수에 topic 별 broker/credentials 를 JSON 으로 주입
+# 받고, kcat(librdkafka 기반) 으로 실제 sidecar(fluent-bit 의 Kafka output 도
+# librdkafka 를 사용) 와 동일한 클라이언트로 검증한다. 실패 시 non-zero exit.
+#
+# PREFLIGHT_TOPICS JSON 구조:
+#   {
+#     "topic-name": {
+#       "kafkaBrokerUrl": "host:port",
+#       "kafkaPluginParameters": {
+#         "username":            "...",
+#         "password":            "...",
+#         "scram_mechanism":     "sha256|sha512",
+#         "jaas":                "... username=\"u\" password=\"p\" ...",
+#         "ssl_ca_cert":         "/path/to/ca.pem",
+#         "ssl_client_cert":     "/path/to/cert.pem",
+#         "ssl_client_cert_key": "/path/to/key.pem"
+#       }
+#     }
+#   }
+set -euo pipefail
+
+if [[ -z "${PREFLIGHT_TOPICS:-}" ]]; then
+  echo "kafka-preflight: PREFLIGHT_TOPICS env var (JSON) is required" >&2
+  exit 1
+fi
+
+jaas_re_user='username[[:space:]]*=[[:space:]]*"([^"]+)"'
+jaas_re_pass='password[[:space:]]*=[[:space:]]*"([^"]+)"'
+
+while IFS= read -r name; do
+  broker=$(jq -r --arg n "$name" '.[$n].kafkaBrokerUrl' <<<"$PREFLIGHT_TOPICS")
+  params=$(jq -c --arg n "$name" '.[$n].kafkaPluginParameters // {}' <<<"$PREFLIGHT_TOPICS")
+
+  get() { jq -r --arg k "$1" '.[$k] // ""' <<<"$params"; }
+  user=$(get username); pw=$(get password); jaas=$(get jaas)
+  ca=$(get ssl_ca_cert); cc=$(get ssl_client_cert); ck=$(get ssl_client_cert_key)
+  scram=$(get scram_mechanism)
+
+  # JAAS 의 username/password 가 우선순위 최상
+  if [[ -n "$jaas" ]]; then
+    [[ "$jaas" =~ $jaas_re_user ]] && user=${BASH_REMATCH[1]}
+    [[ "$jaas" =~ $jaas_re_pass ]] && pw=${BASH_REMATCH[1]}
+  fi
+
+  args=(-b "$broker" -L -m 5)
+
+  if [[ -n "$user" && -n "$ca" ]]; then sec=SASL_SSL
+  elif [[ -n "$user" ]];             then sec=SASL_PLAINTEXT
+  elif [[ -n "$ca" || ( -n "$cc" && -n "$ck" ) ]]; then sec=SSL
+  else sec=
+  fi
+  [[ -n "$sec" ]] && args+=(-X "security.protocol=$sec")
+
+  if [[ -n "$user" ]]; then
+    case "${scram,,}" in
+      sha256) mech=SCRAM-SHA-256 ;;
+      sha512) mech=SCRAM-SHA-512 ;;
+      *)      mech=PLAIN ;;
+    esac
+    args+=(-X "sasl.mechanism=$mech" -X "sasl.username=$user" -X "sasl.password=$pw")
+  fi
+
+  [[ -n "$ca" ]] && args+=(-X "ssl.ca.location=$ca")
+  [[ -n "$cc" ]] && args+=(-X "ssl.certificate.location=$cc")
+  [[ -n "$ck" ]] && args+=(-X "ssl.key.location=$ck")
+
+  echo "== kafka-preflight: $name -> $broker =="
+  kcat "${args[@]}" >/dev/null
+  echo "  OK"
+done < <(jq -r 'keys[]' <<<"$PREFLIGHT_TOPICS")
