@@ -51,6 +51,8 @@ RUN set -eux; \
         openjdk-21-jre-headless \
         openssh-client \
         patch \
+        python3.12 \
+        python3.12-venv \
         tzdata; \
     java_home="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"; \
     mkdir -p /opt/java; \
