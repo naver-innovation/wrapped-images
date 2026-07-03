@@ -101,6 +101,7 @@ RUN set -eux; \
         git \
         libfontconfig1 \
         libfreetype6 \
+        libharfbuzz0b \
         openjdk-21-jre-headless \
         procps \
         ssh-client \
