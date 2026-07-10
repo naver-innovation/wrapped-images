@@ -8,12 +8,17 @@ RUN set -eux; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         docker.io \
+        python3.12 \
+        python3.12-venv \
         util-linux; \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=aws-cli /usr/local/aws-cli/ /usr/local/aws-cli/
-COPY --from=aws-cli /usr/local/bin/aws /usr/local/bin/aws
-COPY --from=aws-cli /usr/local/bin/aws_completer /usr/local/bin/aws_completer
+RUN set -eux; \
+    ln -s /usr/local/aws-cli/v2/current/bin/aws /usr/local/bin/aws; \
+    ln -s /usr/local/aws-cli/v2/current/bin/aws_completer /usr/local/bin/aws_completer; \
+    python3 --version; \
+    aws --version
 
 COPY jenkins-agent-with-docker /usr/local/bin/jenkins-agent-with-docker
 RUN chmod 0755 /usr/local/bin/jenkins-agent-with-docker
