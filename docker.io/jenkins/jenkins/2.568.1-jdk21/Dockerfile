@@ -7,6 +7,21 @@
 #   - baseimage/ubuntu 의 apt source 는 사내 Nexus 로 고정되어 있어, multi-arch 공식 Ubuntu mirror 로 재설정.
 #   - upstream 이 jlink 로 구성하던 JDK21 런타임은 Ubuntu openjdk-21-jre-headless 로 보정 설치한다.
 #   - jenkins.war 는 upstream 과 동일하게 Jenkins signing key 로 asc 서명을 검증한다.
+#   - git-lfs 3.7.1 release binary 의 취약한 Go stdlib 대신 같은 소스를 보안 수정된 Go 로 빌드한다.
+FROM docker.io/library/golang:1.25.12-bookworm AS git-lfs
+
+ARG GIT_LFS_VERSION=3.7.1
+ARG GIT_LFS_SOURCE_SHA256=8f56058622edfea1d111e50e9844ef2f5ce670b2dbe4d55d48e765c943af4351
+
+RUN set -eux; \
+    curl -fsSL -o git-lfs.tar.gz "https://github.com/git-lfs/git-lfs/releases/download/v${GIT_LFS_VERSION}/git-lfs-v${GIT_LFS_VERSION}.tar.gz"; \
+    echo "${GIT_LFS_SOURCE_SHA256}  git-lfs.tar.gz" | sha256sum -c -; \
+    tar xzf git-lfs.tar.gz; \
+    cd "git-lfs-${GIT_LFS_VERSION}"; \
+    make bin/git-lfs VERSION="v${GIT_LFS_VERSION}" GIT_LFS_SHA="v${GIT_LFS_VERSION}"; \
+    mkdir -p /out; \
+    cp bin/git-lfs /out/git-lfs
+
 FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/ubuntu:24.04 AS war
 
 USER root
@@ -52,7 +67,6 @@ USER root
 ARG JENKINS_VERSION=2.568.1
 ARG DOCKER_COMMIT=7ce7e3cd5eb2aa98c3990ab5c4270cb579e40a51
 ARG COMMIT_SHA=7ce7e3cd5eb2aa98c3990ab5c4270cb579e40a51
-ARG GIT_LFS_VERSION=3.7.1
 ARG PLUGIN_CLI_VERSION=2.15.0
 ARG PLUGIN_CLI_URL=https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/${PLUGIN_CLI_VERSION}/jenkins-plugin-manager-${PLUGIN_CLI_VERSION}.jar
 ARG JENKINS_SUPPORT_SHA256=a1b91705b08541cca2cf458bbbc4214b7dd7177e179ffd8da30623d443c6191c
@@ -126,13 +140,9 @@ RUN set -eux; \
     curl -fsSL "${PLUGIN_CLI_URL}" -o /opt/jenkins-plugin-manager.jar; \
     echo "$(curl -fsSL "${PLUGIN_CLI_URL}.sha256")  /opt/jenkins-plugin-manager.jar" | sha256sum -c -
 
-RUN set -eux; \
-    arch="$(uname -m | sed -e 's/x86_64/amd64/g' -e 's/aarch64/arm64/g')"; \
-    curl -fsSL -o git-lfs.tgz "https://github.com/git-lfs/git-lfs/releases/download/v${GIT_LFS_VERSION}/git-lfs-linux-${arch}-v${GIT_LFS_VERSION}.tar.gz"; \
-    tar xzf git-lfs.tgz; \
-    bash git-lfs-*/install.sh; \
-    git lfs install --skip-repo --system; \
-    rm -rf git-lfs*
+COPY --from=git-lfs /out/git-lfs /usr/local/bin/git-lfs
+
+RUN git lfs install --skip-repo --system
 
 RUN set -eux; \
     curl -fsSL "https://raw.githubusercontent.com/jenkinsci/docker/${DOCKER_COMMIT}/jenkins-support" -o /usr/local/bin/jenkins-support; \
