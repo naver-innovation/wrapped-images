@@ -8,9 +8,10 @@
 #     dnf 로 보충. mount-s3 는 rpath $ORIGIN 으로 자체 libfuse.so.2 동반.
 #   - 원본 runtime 은 distroless(USER 미지정=root, WORKDIR=/) → 명시 복원
 #
-# 빌드 (컨텍스트 = upstream 소스 v2.7.0 클론):
-#   git clone --branch v2.7.0 --depth 1 https://github.com/awslabs/mountpoint-s3-csi-driver
-#   docker build -t <tag> -f mountpoint-s3/wrap/Dockerfile ./mountpoint-s3-csi-driver
+# 빌드 (self-contained — builder 가 소스를 직접 clone, 컨텍스트 무관):
+#   docker build -t <tag> -f mountpoint-s3/wrap/Dockerfile mountpoint-s3/wrap
+#   (CI 컨텍스트 디렉토리에 소스가 없어도 동작 — COPY . . 방식은 CI 에서
+#    "make: No rule to make target" 로 실패했음)
 # ============================================================
 
 ARG MOUNTPOINT_VERSION=1.22.3
@@ -45,9 +46,12 @@ RUN MP_ARCH=`echo ${TARGETARCH} | sed s/amd64/x86_64/` && \
 # Build driver. Use BUILDPLATFORM not TARGETPLATFORM for cross compilation
 FROM --platform=$BUILDPLATFORM public.ecr.aws/eks-distro-build-tooling/golang:1.26.4-al23 as builder
 ARG TARGETARCH
+ARG DRIVER_VERSION=v2.7.0
 
 WORKDIR /go/src/github.com/awslabs/mountpoint-s3-csi-driver
-COPY . .
+# 원본은 COPY . . (컨텍스트=소스) — CI 컨텍스트에 소스가 없으므로 직접 clone (self-contained)
+RUN git clone --branch "${DRIVER_VERSION}" --depth 1 \
+        https://github.com/awslabs/mountpoint-s3-csi-driver .
 RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod \
     TARGETARCH=${TARGETARCH} make generate_licenses bin
 
