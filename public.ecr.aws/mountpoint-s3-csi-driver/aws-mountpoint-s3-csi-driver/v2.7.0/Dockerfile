@@ -44,7 +44,8 @@ RUN MP_ARCH=`echo ${TARGETARCH} | sed s/amd64/x86_64/` && \
     patchelf --set-rpath '$ORIGIN' /mountpoint-s3/bin/mount-s3
 
 # Build driver. Use BUILDPLATFORM not TARGETPLATFORM for cross compilation
-FROM --platform=$BUILDPLATFORM public.ecr.aws/eks-distro-build-tooling/golang:1.26.4-al23 as builder
+# go 1.26.5: 원본은 1.26.4 였으나 stdlib CVE-2026-39822(HIGH, fixed 1.26.5) 패치 위해 상향
+FROM --platform=$BUILDPLATFORM public.ecr.aws/eks-distro-build-tooling/golang:1.26.5-al23 as builder
 ARG TARGETARCH
 ARG DRIVER_VERSION=v2.7.0
 
