@@ -1,4 +1,4 @@
-FROM golang:1.18-alpine3.17 AS builder
+FROM golang:1.26.4-alpine3.24 AS builder
 WORKDIR /src
 USER root
 
