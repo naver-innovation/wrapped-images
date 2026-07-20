@@ -12,6 +12,7 @@ RUN git clone --depth 1 --recurse-submodules \
     /src/pinpoint-c-agent
 
 WORKDIR /src/pinpoint-c-agent/collector-agent
+RUN go get google.golang.org/grpc@v1.79.3 && go mod tidy
 RUN make TAG=v0.6.6
 
 FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/alpine:3.23
