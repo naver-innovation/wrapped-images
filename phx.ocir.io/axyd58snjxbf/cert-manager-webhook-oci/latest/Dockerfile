@@ -14,15 +14,28 @@
 #
 # 보정 사항
 #   1) Go 버전 — 원본 Dockerfile 은 ARG GOLANG_VERSION=1.19.4 를 쓰는데 현재 go.mod 는 `go 1.24.0` 을
-#      요구한다. upstream 이 의존성(cert-manager 1.12.14 등)만 올리고 Dockerfile ARG 를 안 고친 상태라
-#      1.19 빌더로는 빌드가 깨진다. 빌더를 1.24 계열로 올렸다.
+#      요구한다. upstream 이 의존성(cert-manager 1.10.1→1.12.14)만 올리고 Dockerfile ARG 를 안 고친
+#      상태라 1.19 빌더로는 빌드가 깨진다.
 #   2) 소스 고정 — upstream 에 릴리스 태그가 없다. 커밋 SHA 로 핀해서 latest 가 떠다니는 걸 막는다.
 #      SHA 를 fetch 로 직접 지정하므로, upstream 이 force-push 로 그 커밋을 없애면 조용히 다른 코드를
 #      빌드하는 대신 빌드가 실패한다.
 #   3) 빌드 컨텍스트 — 이 저장소는 Dockerfile 만 두므로 원본의 `COPY . .` 대신 빌더에서 소스를 받는다.
 #   4) 원본 arch 는 amd64 단일이지만 여기서는 소스에서 빌드하므로 amd64/arm64 둘 다 나온다.
 #      CGO_ENABLED=0 정적 링크라 musl/glibc 와도 무관하다 (원본과 동일한 빌드 플래그).
-ARG GOLANG_VERSION=1.24
+#   5) CVE 대응 — Trivy 가 잡은 것을 소스 빌드 단계에서 없앤다.
+#      - 빌더 Go 를 1.26 으로 올렸다. 1.24.13 stdlib 에 HIGH 12건이 걸려 있었다.
+#      - go.mod 의존성 중 취약한 것을 빌드 전에 올린다:
+#          google.golang.org/grpc v1.59.0 -> v1.82.1  (CVE-2026-33186 CRITICAL, GHSA-hrxh-6v49-42gf)
+#          golang.org/x/crypto    v0.45.0 -> v0.52.0  (HIGH 9건)
+#          golang.org/x/net       v0.47.0 -> v0.55.0  (HIGH 4건)
+#        grpc 1.82.1 이 otel 1.43.0 을 끌어오는데 go.sum 에 go.opentelemetry.io/auto/sdk 항목이 없어
+#        빌드가 깨진다. 그래서 그 모듈도 같이 받는다.
+#        `go mod tidy` 는 돌리지 않는다 — 테스트 파일이 cert-manager v1.21.0 에 없는
+#        test/acme/dns 패키지를 import 해서 tidy 가 실패한다. 빌드에는 tidy 가 필요 없다.
+#      - 로컬 검증: golang:1.26-alpine 에서 빌드 성공 + `--help` 정상 출력 확인.
+#      - bind-libs / bind-tools / c-ares / curl / libcurl HIGH 는 baseimage/alpine:3.23 자체
+#        패키지라 여기서 못 고친다. WASL 팀의 base 갱신 대상이다.
+ARG GOLANG_VERSION=1.26
 ARG GIT_REF=635df6b6c012ce98da6cdb43fbfb5af80ae30378
 
 FROM docker.io/library/golang:${GOLANG_VERSION}-alpine AS build_deps
@@ -39,6 +52,14 @@ RUN set -eux; \
     git fetch -q --depth 1 origin "${GIT_REF}"; \
     git checkout -q FETCH_HEAD; \
     test -f go.mod
+
+# 취약 의존성 상향 (위 "보정 사항 5" 참조)
+RUN set -eux; \
+    go get \
+      google.golang.org/grpc@v1.82.1 \
+      golang.org/x/crypto@v0.52.0 \
+      golang.org/x/net@v0.55.0 \
+      go.opentelemetry.io/auto/sdk
 
 RUN go mod download
 
