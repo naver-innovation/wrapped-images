@@ -32,6 +32,7 @@ RUN set -eux; \
     echo "${ARCH_SHA}  ${ARCHIVE}" | sha256sum -c -; \
     unzip -q "${ARCHIVE}"; \
     install -m 0755 "nats-streaming-server-v${VERSION}-linux-${TARGETARCH}/nats-streaming-server" /usr/local/bin/nats-streaming-server; \
+    ln -s /usr/local/bin/nats-streaming-server /nats-streaming-server \
     rm -rf "${ARCHIVE}" "nats-streaming-server-v${VERSION}-linux-${TARGETARCH}"
 
 # upstream 공식 이미지는 root 로 동작하는 정적 단일 바이너리 이미지 (별도 USER 라인 없음).
