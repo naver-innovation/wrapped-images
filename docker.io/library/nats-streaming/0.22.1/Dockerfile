@@ -32,12 +32,15 @@ RUN set -eux; \
     echo "${ARCH_SHA}  ${ARCHIVE}" | sha256sum -c -; \
     unzip -q "${ARCHIVE}"; \
     install -m 0755 "nats-streaming-server-v${VERSION}-linux-${TARGETARCH}/nats-streaming-server" /usr/local/bin/nats-streaming-server; \
-    ln -s /usr/local/bin/nats-streaming-server /nats-streaming-server \
+    ln -sf /usr/local/bin/nats-streaming-server /nats-streaming-server; \
     rm -rf "${ARCHIVE}" "nats-streaming-server-v${VERSION}-linux-${TARGETARCH}"
 
 # upstream 공식 이미지는 root 로 동작하는 정적 단일 바이너리 이미지 (별도 USER 라인 없음).
 # 동일하게 root 유지하여 동작을 보존한다.
 EXPOSE 4222 8222
 
-ENTRYPOINT ["/usr/local/bin/nats-streaming-server"]
+# upstream 의 ENTRYPOINT 는 ["/nats-streaming-server"] 다 (docker buildx imagetools inspect 확인).
+# 위 심볼릭 링크로 그 경로를 만들어 두었으므로 원본과 같은 경로를 그대로 쓴다.
+# /usr/local/bin/nats-streaming-server 로 호출하는 쪽도 실제 파일이 거기 있으므로 그대로 동작한다.
+ENTRYPOINT ["/nats-streaming-server"]
 CMD ["-m", "8222"]
