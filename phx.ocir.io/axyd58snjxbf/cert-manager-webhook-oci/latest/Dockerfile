@@ -74,7 +74,12 @@ USER root
 # baseimage/alpine 기본 WORKDIR 은 /root(0700) → 원본과 같이 / 로 되돌린다
 WORKDIR /
 
-RUN apk add --no-cache ca-certificates
+# 원본은 `apk add --no-cache ca-certificates` 를 하지만 여기서는 하지 않는다.
+# baseimage/alpine 에 CA 번들이 이미 박혀 있고(패키지로는 미설치지만
+# /etc/ssl/certs/ca-certificates.crt 가 존재한다), base 의 apk 리포지터리가
+# 사내 미러(nexus.naver-innovation.net)라 그 망 밖에서는 빌드가 막힌다.
+# 대신 번들이 실제로 있는지 확인한다 — base 가 바뀌어 사라지면 여기서 실패한다.
+RUN test -s /etc/ssl/certs/ca-certificates.crt
 
 COPY --from=build /workspace/webhook /usr/local/bin/webhook
 
