@@ -78,8 +78,16 @@ WORKDIR /
 # baseimage/alpine 에 CA 번들이 이미 박혀 있고(패키지로는 미설치지만
 # /etc/ssl/certs/ca-certificates.crt 가 존재한다), base 의 apk 리포지터리가
 # 사내 미러(nexus.naver-innovation.net)라 그 망 밖에서는 빌드가 막힌다.
-# 대신 번들이 실제로 있는지 확인한다 — base 가 바뀌어 사라지면 여기서 실패한다.
-RUN test -s /etc/ssl/certs/ca-certificates.crt
+#
+# 대신 base 가 담고 있는 bind-tools(dig/nslookup)와 curl 계열을 지운다.
+# 이 이미지는 정적 Go 바이너리 하나만 돌려서 그 도구들을 쓰지 않는데,
+# Trivy HIGH 19건(bind-libs·bind-tools·c-ares·curl·libcurl)이 전부 그 패키지들이다.
+# base 패키지 63개 -> 41개로 줄고 HIGH 19건이 없어진다.
+# --no-network 라 사내 미러에 닿지 않아도 동작한다.
+# 근본 해결은 WASL 팀의 base 갱신이고, 이건 그때까지의 조치다.
+# CA 번들이 purge 후에도 남아 있는지 같이 확인한다 — 사라지면 여기서 빌드가 실패한다.
+RUN apk del --no-network bind-tools curl \
+    && test -s /etc/ssl/certs/ca-certificates.crt
 
 COPY --from=build /workspace/webhook /usr/local/bin/webhook
 
