@@ -62,7 +62,13 @@ WORKDIR /
 # (패키지로는 미설치지만 /etc/ssl/certs/ca-certificates.crt 가 존재한다),
 # base 의 apk 리포지터리가 사내 미러(nexus.naver-innovation.net)라 그 망 밖에서는 빌드가 막힌다.
 # 대신 번들이 실제로 있는지 확인한다 — base 가 바뀌어 사라지면 조용히 넘어가지 않고 여기서 실패한다.
-RUN test -s /etc/ssl/certs/ca-certificates.crt
+# 이 이미지는 정적 Go 바이너리 하나만 돌린다. base 가 담고 있는 bind-tools(dig/nslookup)와
+# curl 계열은 쓰지 않는데, Trivy HIGH 19건(bind-libs·bind-tools·c-ares·curl·libcurl)이
+# 전부 그 패키지들이다. 지우면 19건이 0 이 되고 이미지도 작아진다 (base 63개 -> 41개).
+# --no-network 라 base 의 사내 미러(nexus.naver-innovation.net)에 닿지 않아도 동작한다.
+# 근본 해결은 WASL 팀의 base 갱신이고, 이건 그때까지의 조치다.
+RUN apk del --no-network bind-tools curl \
+    && test -s /etc/ssl/certs/ca-certificates.crt
 
 COPY --from=builder /out/nats-streaming-server /usr/local/bin/nats-streaming-server
 # upstream 의 ENTRYPOINT 경로가 /nats-streaming-server 다. 링크로 그 경로를 만들어 둔다.
