@@ -5,8 +5,9 @@
 #   1.7.5 = 그 저장소 HEAD(fc023c2a3b6a6c151700c8cf64740ce68c4972f5, 2026-06-10) 기준이다.
 #     저장소 태그는 v3.3.0 같은 차트 버전이라 이미지 태그와 대응하지 않는다. 대신 CHANGELOG.md 와
 #     charts/logan/values.yaml·charts/oci-onm/values.yaml 이 HEAD 에서 1.7.5 를 가리킨다.
-#   Gemfile, Gemfile.lock, entrypoint.sh, tcpconnect.{c,h,bpf.c} 는 그 경로에서 그대로 가져와
-#     이 디렉터리에 같이 뒀다 (CI 빌드 컨텍스트가 Dockerfile 이 있는 디렉터리다).
+#   entrypoint.sh, tcpconnect.{c,h,bpf.c} 는 그 경로에서 그대로 가져와 이 디렉터리에 같이 뒀다
+#     (CI 빌드 컨텍스트가 Dockerfile 이 있는 디렉터리다).
+#     Gemfile·Gemfile.lock 은 CVE 때문에 핀을 올렸다 — 아래 "gem CVE 대응" 참조.
 #   라이선스: UPL-1.0 (Universal Permissive License v1.0)
 # 계열 매핑: Oracle Linux 8.10 (RHEL 계열) -> baseimage/navix:10.1-wasl-centos
 #
@@ -37,6 +38,23 @@
 #      libyaml-devel 로 딸려오던 것이라, 출하 stage 에 없으면 런타임에 죽는다.
 #   6) rm -rf 대상에 /var/cache/libdnf5 를 더했다.
 #
+# gem CVE 대응 — Trivy 가 잡은 CRITICAL 2 / HIGH 10 은 전부 gem 이고 base 패키지는 0건이었다.
+#   1.7.5 가 업스트림 최신이라 태그를 올려서 피할 방법이 없다 (저장소 최신 릴리스 oci-onm-4.2.2 가
+#   HEAD 를 포함하고, 레지스트리에도 1.7.6 이상이 없다). 그래서 Gemfile 핀을 직접 올렸다.
+#     fluentd        1.17.1 -> >= 1.19.3  (CVE-2026-44024 CRITICAL, 44025·44160·44161 HIGH)
+#     oj             3.16.4 -> >= 3.17.3  (CVE-2026-54592·54896·54897·54900·54903 HIGH)
+#     concurrent-ruby       -> >= 1.3.7   (CVE-2026-54906 CRITICAL, 54904 HIGH) — 전이 의존이라 명시 추가
+#     jwt                   -> ~> 2.10.3  (CVE-2026-45363 HIGH) — 전이 의존이라 명시 추가
+#                              3.x 는 major 상향이라 피했다
+#   여기서 하나가 딸려 올라간다: fluent-plugin-kubernetes_metadata_filter 를 3.5.0 고정에서
+#   >= 3.5.0 으로 풀었다. 3.5.0 이 `fluentd >= 0.14.0, < 1.18` 을 요구해 fluentd 1.19 를 막는다.
+#   해소 결과 3.8.0 이 잡힌다. 이 플러그인만 upstream 핀에서 벗어나므로 동작 확인이 필요한 지점이다.
+#   Gemfile.lock 은 navix 에서 다시 해소해 갱신했다. 잡힌 버전:
+#     fluentd 1.19.3 / oj 3.17.4 / concurrent-ruby 1.3.8 / jwt 2.10.3 /
+#     fluent-plugin-kubernetes_metadata_filter 3.8.0 / kubeclient 4.13.0
+#   새 lock 의 PLATFORMS 에는 x86_64-linux-gnu 와 aarch64-linux-gnu 가 모두 들어 있다
+#   (upstream lock 은 x86_64-linux 하나뿐이었다). CI 가 두 아키텍처를 네이티브로 빌드한다.
+#
 # 검증 (로컬 arm64)
 #   fluentd 1.17.1 기동, OCI Logging Analytics 플러그인 로드, gem 네이티브 확장 14개 전부 해소,
 #   tini 0.19.0 / tcpconnect / libjemalloc.so.2 동작 확인.
@@ -65,6 +83,9 @@ RUN microdnf -y update --setopt=install_weak_deps=0 --nodocs \
 ## libyaml-devel 이 navix 기본 리포지터리에 없다 (RHEL10 계열에서 CRB 소속인데 navix 에는 CRB 가
 ## 설정돼 있지 않다). 없으면 psych 5.1.2 컴파일이 실패한다. navix 가 이미 mirror.stream.centos.org
 ## 에서 BaseOS·AppStream 을 직접 받으므로, 같은 미러의 CRB 를 빌더에서만 켠다.
+## 패키지 목록은 원본에 openssl-devel 과 pkgconf-pkg-config 를 더한 것이다. fluentd 1.19.3 이
+## default gem 이 아닌 실제 openssl gem 4.0.2 를 끌어오는데, 그게 openssl/ssl.h 를 찾지 못해
+## extconf 가 죽는다. 원본은 fluentd 1.17.1 이라 이 gem 을 컴파일하지 않아 필요 없던 항목이다.
 FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/navix:10.1-wasl-centos AS gem_builder
 USER root
 WORKDIR /fluentd
@@ -78,7 +99,7 @@ RUN set -eux; \
     dnf -y install --setopt=install_weak_deps=0 --nodocs ruby ruby-libs rubygems; \
     ruby -e 'raise "ruby 3.3 expected, got #{RUBY_VERSION}" unless RUBY_VERSION.start_with?("3.3.")'; \
     gem install bundler -v 2.5.16; \
-    dnf -y --enablerepo=crb install --nodocs gcc make redhat-rpm-config openssl ruby-devel gcc-c++ libtool libffi-devel bzip2 git libyaml-devel which; \
+    dnf -y --enablerepo=crb install --nodocs gcc make redhat-rpm-config openssl openssl-devel pkgconf-pkg-config ruby-devel gcc-c++ libtool libffi-devel bzip2 git libyaml-devel which; \
     bundle config silence_root_warning true; \
     bundle config --local path /fluentd/vendor/bundle; \
     bundle config --global jobs 9; \
