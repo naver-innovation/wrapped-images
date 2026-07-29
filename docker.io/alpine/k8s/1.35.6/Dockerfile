@@ -1,37 +1,42 @@
-# 원본: docker.io/alpine/k8s:1.31.2
+# 원본: docker.io/alpine/k8s:1.35.6
 #   https://github.com/alpine-docker/k8s (master CI 빌드 — git 태그 없음.
 #   레시피는 원본 이미지 config history 에서 복원, ARG 값은 빌드 당시 주입값 그대로)
 # 원본 base:
-#   alpine:edge (2024-10-27 CI 빌드 시점 스냅샷)
+#   alpine:edge (2026-06-14 CI 빌드 시점 스냅샷, minirootfs-20260127)
 # 계열 매핑: alpine → baseimage/alpine
+# 참고: 1.31.2 래핑을 대체 (클러스터 k8s 1.35.2 — kubectl 은 동일 minor 의 최신 patch 1.35.6 사용,
+#   patch 차이는 호환성 무관하고 빌드 go 가 최신이라 CVE 최소).
+#   upstream 1.35.x 는 helm 4 로 전환했고 helm-push(cm-push) 플러그인을 제거함.
 # 보정 사항:
 #   - baseimage/alpine 은 기본 USER 가 비루트 → 설치 위해 USER root 전환.
 #     원본 런타임은 USER 미지정(=root), WORKDIR /apps, CMD /bin/sh → 마지막에 그대로 복원.
 #   - baseimage/alpine 의 apk repository 는 사내망 전용 → dl-cdn v3.23 repositories 파일을 명시 사용.
 #   - alpine 3.23 에서 yq 패키지가 yq-go 로 개명 (동일하게 /usr/bin/yq 제공) → apk add jq yq-go.
-#   - 원본이 releases/latest 로 받던 eksctl·aws-iam-authenticator 를 원본 빌드일(2024-10-27) 기준
-#     latest 버전으로 핀: eksctl 0.194.0, aws-iam-authenticator 0.6.27.
+#   - 원본이 releases/latest 로 받던 eksctl·aws-iam-authenticator 는 버전 ARG 로 핀
 #     (GitHub API latest 조회는 CI 에서 rate-limit 으로 깨질 수 있고 재현성도 없음.
 #      eksctl 은 weaveworks/eksctl 아카이브 → 정식 저장소 eksctl-io/eksctl 로 URL 교체.)
+#   - helm 플러그인도 버전 미지정 설치는 최신 태그를 받아 helm 버전과 호환이 깨질 수 있어 핀.
 #   - krew 의 PATH 등록은 ~/.bashrc 대신 /root/.bashrc 로 명시 (base 의 HOME 가정 제거).
-#   - helm plugin install 도 버전 미지정 시 최신 태그를 받아 helm 3.16.2 와 호환이 깨짐
-#     (최신 helm-diff 의 plugin.yaml 은 platformHooks 필드 사용 → "unknown field" 로 설치 실패).
-#     원본 빌드일 기준 latest 로 핀: helm-diff 3.9.11, helm-unittest 0.6.3, helm-push 0.10.4.
+# CVE 조치 (2026-07-29, 로컬 Trivy 실측 기준):
+#   - 도구·플러그인 버전을 upstream 1.35.6 핀 대신 2026-07-29 시점 latest 로 상향
+#     (원본 빌드일 2026-06-14 기준 값은 각 ARG 뒤 주석).
+#   - apk upgrade 추가 — base 포함 OS 패키지 픽스 반영.
+#   - krew 설치 후 남던 설치용 바이너리(/root/krew-linux_*) 삭제 (원본은 tar.gz 만 삭제 —
+#     1.31.2 스캔에서 이 잔여물 하나가 CRITICAL 2/HIGH 26 을 차지했음).
 FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/alpine:3.23
 
 ARG ARCH
-ARG HELM_VERSION=3.16.2
-ARG KUBECTL_VERSION=1.31.2
-ARG KUSTOMIZE_VERSION=v5.5.0
-ARG KUBESEAL_VERSION=0.27.1
-ARG KREW_VERSION=0.4.4
-ARG VALS_VERSION=0.37.7
-ARG KUBECONFORM_VERSION=0.6.7
-ARG EKSCTL_VERSION=0.194.0
-ARG AUTHENTICATOR_VERSION=0.6.27
-ARG HELM_DIFF_VERSION=3.9.11
-ARG HELM_UNITTEST_VERSION=0.6.3
-ARG HELM_PUSH_VERSION=0.10.4
+ARG KUBECTL_VERSION=1.35.6
+ARG HELM_VERSION=4.2.3             # 원본 4.2.1
+ARG KUSTOMIZE_VERSION=v5.8.1       # 원본 동일
+ARG KUBESEAL_VERSION=0.38.4        # 원본 0.37.0
+ARG KREW_VERSION=0.5.0             # 원본 동일
+ARG VALS_VERSION=0.45.0            # 원본 0.44.1
+ARG KUBECONFORM_VERSION=0.8.0      # 원본 동일
+ARG EKSCTL_VERSION=0.229.0         # 원본은 releases/latest
+ARG AUTHENTICATOR_VERSION=0.7.18   # 원본은 releases/latest
+ARG HELM_DIFF_VERSION=3.15.10      # 원본은 버전 미지정 설치
+ARG HELM_UNITTEST_VERSION=1.1.2    # 원본은 버전 미지정 설치
 
 USER root
 
@@ -39,6 +44,9 @@ RUN printf '%s\n' \
         "https://dl-cdn.alpinelinux.org/alpine/v3.23/main" \
         "https://dl-cdn.alpinelinux.org/alpine/v3.23/community" \
         > /tmp/apk.repositories
+
+# base 포함 OS 패키지 CVE 픽스 반영
+RUN apk upgrade --update --no-cache --repositories-file /tmp/apk.repositories
 
 RUN case `uname -m` in \
     x86_64) ARCH=amd64; ;; \
@@ -60,13 +68,12 @@ RUN . /envfile && echo $ARCH && \
     chmod +x /usr/bin/helm && \
     rm -rf linux-${ARCH}
 
-# helm plugins
-RUN helm plugin install https://github.com/databus23/helm-diff --version ${HELM_DIFF_VERSION} && rm -rf /tmp/helm-*
-RUN helm plugin install https://github.com/helm-unittest/helm-unittest --version ${HELM_UNITTEST_VERSION} && rm -rf /tmp/helm-*
-RUN helm plugin install https://github.com/chartmuseum/helm-push --version ${HELM_PUSH_VERSION} && \
-    rm -rf /tmp/helm-* \
-    /root/.local/share/helm/plugins/helm-push/testdata \
-    /root/.cache/helm/plugins/https-github.com-chartmuseum-helm-push/testdata
+# helm plugins (upstream 1.35.x 는 diff·unittest 만 설치 — cm-push 는 제거됨)
+RUN helm plugin install --verify=false --version ${HELM_DIFF_VERSION} https://github.com/databus23/helm-diff && \
+    rm -rf /tmp/helm-* && \
+    rm -rf /root/.cache/helm/plugins/https-github.com-databus23-helm-diff/.git
+RUN helm plugin install --verify=false --version ${HELM_UNITTEST_VERSION} https://github.com/helm-unittest/helm-unittest && \
+    rm -rf /tmp/helm-*
 
 # kubectl
 RUN . /envfile && echo $ARCH && \
@@ -120,7 +127,7 @@ RUN . /envfile && echo $ARCH && \
     tar zxvf krew-linux_${ARCH}.tar.gz && \
     ./krew-linux_${ARCH} install krew && \
     echo 'export PATH=/root/.krew/bin:$PATH' >> /root/.bashrc && \
-    rm krew-linux_${ARCH}.tar.gz
+    rm -f krew-linux_${ARCH}.tar.gz krew-linux_${ARCH}
 
 # kubeconform
 RUN . /envfile && echo $ARCH && \
