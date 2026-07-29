@@ -13,11 +13,18 @@ USER root
 
 # baseimage/alpine 기본 apk 미러는 사내망 밖 빌드에서 타임아웃 → 공식 CDN 을
 # repositories-file 로 지정해 설치 (kafka-ui 래핑과 동일 패턴)
+#
+# apk upgrade 필수 — CVE 보정:
+#   base 에 bind-libs/bind-tools(9.20.23-r0)·c-ares(1.34.6-r0)·curl/libcurl(8.19.0-r0)이
+#   구버전으로 선탑재되어 Trivy HIGH 19건 검출. `apk add` 는 이미 설치된 패키지를
+#   업그레이드하지 않으므로(no-op) upgrade 로 전체를 v3.23 최신 패치로 올린다.
+#   (bind 9.20.26-r0 / c-ares 1.34.8-r0 / curl 8.20.0-r0 — 2026-07-29 로컬 검증)
 RUN set -eux; \
     printf '%s\n' \
         "https://dl-cdn.alpinelinux.org/alpine/v3.23/main" \
         "https://dl-cdn.alpinelinux.org/alpine/v3.23/community" \
         > /tmp/apk.repositories; \
+    apk upgrade --no-cache --repositories-file /tmp/apk.repositories; \
     apk add --no-cache --repositories-file /tmp/apk.repositories \
         bash curl ca-certificates; \
     rm -f /tmp/apk.repositories
