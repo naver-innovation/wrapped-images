@@ -1,0 +1,37 @@
+# directions-helmchart charts/infra/jenkins 가 쓰는 플러그인 목록 (빌드 타임 베이크).
+# Jenkins core 2.568.1 호환 버전 고정 — unpinned latest 는 더 높은 core 를 요구하는
+# 릴리스(config-file-provider 1013+)를 받아 controller boot 를 막을 수 있다.
+#
+# 갱신 규칙: 이 파일을 제자리 수정하지 말고 새 태그 디렉토리를 만든다
+# (push 빌드 트리거가 '**/Dockerfile' 경로라 plugins.txt 단독 변경은 빌드되지 않고,
+#  배포 태그는 immutable 이어야 한다). 갱신 후 directions-helmchart values 태그를 함께 올린다.
+
+# -- jenkins helm chart 기본 installPlugins 4종과 동일 pin (chart 는 installPlugins: false 로 꺼짐)
+kubernetes:4423.vb_59f230b_ce53
+workflow-aggregator:608.v67378e9d3db_1
+git:5.10.1
+# configuration-as-code: 차트 기본 pin(2061)에서 상향 — KR(mapRoute/charts)이 2081 로
+# pin(blueocean 전이 의존, core 2.541.1+ 요구)하고 있어 cross-repo pin 정렬 (2.568.1 호환).
+configuration-as-code:2081.v2d0940662a_34
+
+# -- 구 additionalPlugins 11종 (directions-helmchart, DIRECTIONS-4084 외)
+# config-file-provider: venv 잡의 configFileProvider/configFile (managed runtime config 주입)
+config-file-provider:1006.vc7366c201f57
+docker-workflow:634.vedc7242b_eda_7
+# email-ext: 파이프라인 post 의 emailext / requestor() 수신자 provider
+email-ext:2038.v7b_8817a_499d9
+# git-parameter: deneb conv 파이프라인 parameters 블록의 gitParameter step
+# (요구 core 2.479.3, 2.541.3 dynamicLoad 검증 완료)
+git-parameter:462.463.v496a_59f698e5
+# job-dsl: JCasC jobs: 루트(seed 잡 선언)의 필수 플러그인. 라이브에 수동 설치된
+# 버전과 동일하게 고정 — 없으면 신규 PVC 부팅 시 JCasC 가 실패한다.
+job-dsl:3654.vdf58f53e2d15
+junit:1413.v736fa_5b_61d80
+lockable-resources:1537.v68d014129e68
+pipeline-stage-view:2.41
+# slack: 잡 결과를 Slack 채널로 알리는 slackSend step / Global Slack Notifier.
+# (요구 core 2.479.3 — 2.568.1 호환). 실제 발송에는 JCasC slackNotifier 전역
+# 설정과 Slack app token credential 등록이 함께 필요하다.
+slack:795.v4b_9705b_e6d47
+timestamper:1.30
+ws-cleanup:0.49
