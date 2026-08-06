@@ -12,7 +12,7 @@ workflow-aggregator:608.v67378e9d3db_1
 git:5.10.1
 configuration-as-code:2061.vc08919f7fc37
 
-# -- 구 additionalPlugins (directions-helmchart, DIRECTIONS-4084 외)
+# -- 구 additionalPlugins 11종 (directions-helmchart, DIRECTIONS-4084 외)
 # config-file-provider: venv 잡의 configFileProvider/configFile (managed runtime config 주입)
 config-file-provider:1006.vc7366c201f57
 docker-workflow:634.vedc7242b_eda_7
@@ -27,5 +27,9 @@ job-dsl:3654.vdf58f53e2d15
 junit:1413.v736fa_5b_61d80
 lockable-resources:1537.v68d014129e68
 pipeline-stage-view:2.41
+# slack: 잡 결과를 Slack 채널로 알리는 slackSend step / Global Slack Notifier.
+# (요구 core 2.479.3 — 2.568.1 호환). 실제 발송에는 JCasC slackNotifier 전역
+# 설정과 Slack app token credential 등록이 함께 필요하다.
+slack:795.v4b_9705b_e6d47
 timestamper:1.30
 ws-cleanup:0.49
