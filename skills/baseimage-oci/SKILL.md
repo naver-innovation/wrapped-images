@@ -1,11 +1,11 @@
 ---
 name: baseimage-oci
-description: "외부 오픈소스 이미지(Docker Hub 등)를 OCI 이미지 보안 정책에 따라 허용된 BaseImage(navix/ubuntu/alpine — 원본 계열에 맞춰 선택)로 교체(래핑)하는 워크플로. 원본 Dockerfile 탐색 → 계열 매핑으로 base 선택 → FROM 교체 → 필요 시 계열 차이(apt→dnf 등) 보정 → 빌드 → OCIR push → 보안검수 안내. 공개 Dockerfile 이 없는 이미지(bitnami 등)는 같은 소프트웨어의 공개 대체 이미지(apache/공식 라이브러리 등) base 를 사용자 확인 후 교체. 그래도 없으면 예외 whitelist 안내. Use when: 사용자가 외부/오픈소스 도커 이미지(예: airflow, kafbat, nginx)를 OCI(KSA) 환경에서 쓰려 할 때, Dockerfile 의 FROM 이 외부 이미지일 때, 이미지 보안 정책/래핑/예외 whitelist 를 물을 때. Trigger keywords: baseimage, base image, navix, 외부 이미지, 오픈소스 이미지, 이미지 보안, 래핑, wrapping, docker hub, dockerfile from, 이미지 교체, whitelist, 이미지 검수, ocir push, alpine, ubuntu"
+description: "외부 오픈소스 이미지(Docker Hub 등)를 OCI 이미지 보안 정책에 따라 허용된 BaseImage(navix/ubuntu/alpine — 원본 계열에 맞춰 선택)로 교체(래핑)하는 워크플로. 원본 Dockerfile 탐색 → 계열 매핑으로 base 선택 → FROM 교체 → 필요 시 계열 차이(apt→dnf 등) 보정 → 빌드 → Trivy CVE 스캔 후 고칠 수 있는 취약점 전부 조치 + 잔존분은 CVE-NOTES.md 로 사유 기록 → OCIR push → 보안검수 안내. 공개 Dockerfile 이 없는 이미지(bitnami 등)는 같은 소프트웨어의 공개 대체 이미지(apache/공식 라이브러리 등) base 를 사용자 확인 후 교체. 그래도 없으면 예외 whitelist 안내. Use when: 사용자가 외부/오픈소스 도커 이미지(예: airflow, kafbat, nginx)를 OCI(KSA) 환경에서 쓰려 할 때, Dockerfile 의 FROM 이 외부 이미지일 때, 이미지 보안 정책/래핑/예외 whitelist 를 물을 때. Trigger keywords: baseimage, base image, navix, 외부 이미지, 오픈소스 이미지, 이미지 보안, 래핑, wrapping, docker hub, dockerfile from, 이미지 교체, whitelist, 이미지 검수, ocir push, alpine, ubuntu, trivy, cve, 취약점, 보안 스캔, cve-notes"
 user-invocable: true
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch
 argument-hint: <외부 이미지명 | Dockerfile 경로 | GitHub repo URL>
 metadata:
-  version: 0.2.0
+  version: 0.3.0
   author: taes.kim@navercorp.com
   tags: [wasl, oci, baseimage, navix, ocir, security, korean]
 ---
@@ -17,6 +17,9 @@ OCI(KSA) 환경의 **외부 오픈소스 이미지 보안 정책**을 코드 레
 
 정책 원문: [12.2.2 외부 오픈소스 이미지 보안 정책](https://wiki.navercorp.com/spaces/KSAAPP/pages/5390619759)
 정책 발췌·검수 기준: [references/policy.md](references/policy.md)
+CVE 스캔·조치·소명: [references/cve-remediation.md](references/cve-remediation.md)
+
+> **이미지를 빌드했으면 Trivy 스캔은 필수다.** 고칠 수 있는 취약점은 전부 고치고, 못 고치는 건 사유를 `CVE-NOTES.md` 에 남긴다 → [Step 4.6](#step-46--trivy-cve-스캔--조치-필수).
 
 ## 허용 BaseImage (래핑 대상)
 
@@ -185,6 +188,8 @@ docker build -t <로컬태그> .
 빌드 에러 발생 시 [references/build-troubleshooting.md](references/build-troubleshooting.md) 를 먼저 적용한다. 특히 **동일 계열에서도 자주 터지는 케이스**(`ln: File exists` → `ln -sf`, 비루트 USER → `USER root`, 주입 ARG 누락, `yarn install` 누락, configure TLS 백엔드 미선택 등)를 우선 확인한다.
 **보정을 시도해도 빌드가 불가능하면** → Step D(공개 대체 이미지) → 그래도 불가하면 Step E(예외 whitelist).
 
+> **빌드가 성공하면 Step 4.6(Trivy 스캔·조치)은 건너뛸 수 없다.** 스캔 없이 push 하면 검수에서 되돌아온다.
+
 ### Step 4.5 — 로컬 빌드·실행 테스트 (선택 — 사용자 확인 후)
 
 CI(merge 후) 빌드에만 의존하지 않고 **로컬에서 미리 빌드·실행을 검증**하면 재수정 루프를 크게 줄인다. Dockerfile 작성/수정 직후 **반드시 사용자에게 "로컬 빌드 테스트를 진행할까요?"를 묻고, 동의한 경우에만** 아래를 수행한다 (사용자가 원치 않으면 건너뛰고 Step 5 로).
@@ -224,7 +229,9 @@ docker build -t <local-tag> <Dockerfile-dir>
 
 **3) 결과 보고**: 빌드 성공/실패 + 스모크 통과/실패(또는 아키텍처 불일치로 생략)를 명시한다. 모두 통과하면 Step 6 체크리스트의 "빌드 성공 + 컨테이너 기동 스모크" 항목을 충족한 것으로 표시한다.
 
-**4) 정리(cleanup) — 테스트 끝나면 반드시 로컬 이미지·캐시 제거 (디스크 잠식 방지)**
+**4) 정리(cleanup) — Step 4.6 스캔·조치까지 끝난 뒤에 로컬 이미지·캐시 제거 (디스크 잠식 방지)**
+
+> 순서 주의: **빌드 → 스모크 → Step 4.6 스캔·조치 → 정리**. 스캔 전에 이미지를 지우면 다시 빌드해야 한다.
 
 로컬 테스트 이미지·중간 레이어는 빠르게 쌓여 디스크를 잠식하고(무거운 빌드일수록 심함) 데몬 OOM·디스크 풀의 원인이 된다. 각 이미지의 빌드+스모크가 끝나는 **즉시** 정리한다:
 
@@ -239,6 +246,46 @@ docker builder prune -f                               # 빌드 캐시 회수(무
 - pull 한 base(`baseimage/*`)는 재빌드 시 다시 받아야 하므로 보통 유지(선택). 디스크가 빠듯하면 `docker system df` 로 확인 후 `docker system prune -f`.
 
 > 로컬 테스트는 **보조 검증**이다. 통과 여부와 무관하게 OCIR push·보안검수(Step 5~6)와 CI 멀티아치 빌드는 그대로 진행한다. 로컬에서 못 도는 아키텍처(에뮬 실패 등)는 CI 네이티브 러너에서 최종 확인한다.
+
+### Step 4.6 — Trivy CVE 스캔 · 조치 (필수)
+
+**이미지가 빌드되면 사용자에게 다시 묻지 말고 곧바로 스캔한다.** 스캔은 읽기 전용이라 확인이 필요 없다. 상세 절차·레시피·문서 템플릿: [references/cve-remediation.md](references/cve-remediation.md)
+
+**1) 스캔**
+
+```bash
+mkdir -p ./tmp                                   # 저장소 tmp/ 는 .gitignore 됨
+trivy image --scanners vuln --severity CRITICAL,HIGH --format json -o ./tmp/trivy-<image>.json <local-tag>
+trivy image --scanners vuln --severity CRITICAL,HIGH <local-tag>              # 사람이 볼 요약
+trivy image --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed <local-tag>   # 고칠 수 있는 것만
+```
+
+- `trivy` 가 없으면 설치를 안내하고(`brew install trivy` 등), 설치 불가면 **스캔 미수행 사실을 보고**한다. 조용히 건너뛰지 않는다.
+- 로컬 빌드가 불가능했으면 Step 5 push 후 OCIR 이미지를 원격 스캔한다.
+- 래핑 효과 근거로 **원본 이미지도 같은 조건으로 스캔**해 비교한다 (`--image-src remote --platform linux/amd64`).
+
+**2) 고칠 수 있는 건 전부 고친다** — `Fixed Version` 이 있는 항목은 원칙적으로 전부 조치 대상. 분류별 레시피:
+
+| 분류 | 조치 |
+|---|---|
+| OS 패키지 (apk/apt/dnf) | 마지막 설치 단계 뒤에 `USER root` + `apk upgrade --no-cache` / `apt-get upgrade -y` / `dnf upgrade -y` |
+| 언어 패키지 (pip/npm 등) | 패치 버전으로 상향 핀 (major 상향은 사용자 확인) |
+| Go 등 정적 링크 바이너리 | 도구 버전 상향이 기본. 최신인데도 CRITICAL 이 남으면 빌더 스테이지 소스 재빌드를 **사용자 확인 후** 검토 |
+| 설치 잔여물 (tarball·추출 바이너리·캐시) | 같은 RUN 레이어에서 `rm -f` — 가장 쉬운 감축 (실측: krew 잔여물 하나가 2C/26H) |
+| 런타임에 불필요한 빌드 패키지 | 제거하거나 빌더 스테이지로 분리 (스모크로 검증한 것만) |
+| baseimage 자체 취약점 | 배포판 업그레이드로 대개 해소. 남으면 더 새 baseimage 태그 확인 → 없으면 WASL 팀에 보고 |
+
+조치 → 재빌드 → 재스캔을 **잔존이 더 줄지 않을 때까지 최대 3회** 반복하고, 라운드별 `CRITICAL n / HIGH m` 추이를 남긴다. **조치가 스모크를 깨뜨리면 되돌린다 — CVE 를 줄이려고 동작을 깨지 않는다.**
+
+**3) 못 고치는 건 사유를 남긴다** — 잔존이 1건이라도 있으면 **Dockerfile 과 같은 디렉터리에 `CVE-NOTES.md`** 를 쓴다 (`<registry>/<repo>/<tag>/CVE-NOTES.md`). 미조치 항목은 전부 아래 사유 코드 중 하나로 분류한다. 코드 정의·근거 요건·문서 템플릿은 [references/cve-remediation.md](references/cve-remediation.md) 참고.
+
+`NO_FIX` (픽스 미출시) · `UPSTREAM_PENDING` (업스트림 재빌드 대기) · `DISTRO_LAG` (배포판 저장소 미반영) · `COMPAT_BREAK` (상향 시 동작 파손) · `TAG_PINNED` (태그가 곧 도구 버전) · `BASE_IMAGE` (승인 base 유래) · `NOT_APPLICABLE` (미사용 코드 경로)
+
+- "최신 버전이라 못 고침"은 `git ls-remote --tags` 등으로 **확인한 명령과 날짜**를 함께 남겨야 인정된다.
+- 잔존 0건이면 파일을 만들지 않고 0건 사실만 보고한다.
+- 기존 `CVE-NOTES.md` 가 있으면 새로 쓰지 말고 갱신한다.
+
+**4) CRITICAL 잔존은 에스컬레이션** — 정책상 검수 통과 조건이 "Critical CVE 없음"이다. CRITICAL 이 남으면 문서화로 끝내지 말고 사용자에게 명시 보고하고 판단(소명 진행 / 도구 소스 재빌드 / 태그 상향 / 예외 트랙)을 받는다.
 
 ### Step 5 — OCIR push
 
@@ -259,9 +306,12 @@ docker push me-riyadh-1.ocir.io/<TENANCY_NAMESPACE>/<APP_NS>/<IMAGE>:<TAG>
 
 - [ ] FROM 이 허용 BaseImage(navix/ubuntu/alpine)로 교체됨 (또는 예외 whitelist 승인 완료)
 - [ ] 빌드 성공 + 컨테이너 기동 스모크 확인 (`docker run --rm <이미지> <헬스체크>`)
+- [ ] **Trivy 스캔 수행** (Step 4.6) — 스캔 대상 태그·아키텍처·Trivy 버전 명시
+- [ ] **고칠 수 있는 취약점 전부 조치** (OS 패키지 업그레이드 / 도구 버전 상향 / 잔여물 삭제 등) + 조치 후 재스캔
+- [ ] 잔존 CVE 가 있으면 **`<registry>/<repo>/<tag>/CVE-NOTES.md` 작성** — 항목별 사유 코드와 근거 포함
 - [ ] OCIR push 완료
 - [ ] **클라우드 이미지 보안 검수** 진행 (검수 통과 후 배포 가능)
-- [ ] Critical CVE 없음 확인
+- [ ] Critical CVE 없음 확인 (남았다면 사용자 에스컬레이션 완료 + CVE-NOTES.md 에 CRITICAL 상세 기재)
 
 ### Step D — 공개 Dockerfile 부재 시: 공개 대체 이미지 base 교체 (사용자 확인 필수)
 
@@ -312,12 +362,15 @@ docker push me-riyadh-1.ocir.io/<TENANCY_NAMESPACE>/<APP_NS>/<IMAGE>:<TAG>
 2. **Dockerfile diff**: 원본 대비 변경점 (unified diff) — [필수 원칙](#필수-원칙--한-번에-통과시키기) 반영 여부 명시
 3. **실행 명령**: build / tag / push 명령 시퀀스
 4. **로컬 테스트 결과**: (사용자 동의 후 수행한 경우) 빌드 성공/실패 + 스모크 통과/생략(아키텍처 불일치) — Step 4.5
-5. **체크리스트**: Step 6 항목
-6. **다음 단계**: 보안검수 또는 (대체 이미지 확인 / 예외 whitelist) 요청 안내
+5. **CVE 스캔 결과**: 조치 전/후 `CRITICAL n / HIGH m` + 원본 대비 비교, 조치한 항목 목록, 잔존 항목과 사유 코드, `CVE-NOTES.md` 경로 (스캔을 못 했으면 그 사유) — Step 4.6
+6. **체크리스트**: Step 6 항목
+7. **다음 단계**: 보안검수 또는 (대체 이미지 확인 / 예외 whitelist) 요청 안내
 
 ## 관련 자료 (cross-reference)
 
 - 정책 발췌·검수 기준: [references/policy.md](references/policy.md)
 - 계열 전환·빌드 에러·동일 계열 함정: [references/build-troubleshooting.md](references/build-troubleshooting.md)
+- Trivy 스캔·CVE 조치 레시피·CVE-NOTES 템플릿: [references/cve-remediation.md](references/cve-remediation.md)
+- 실작성 예시: [docker.io/alpine/k8s/1.35.6/CVE-NOTES.md](../../docker.io/alpine/k8s/1.35.6/CVE-NOTES.md)
 - OCIR 이관(레지스트리 전환) plan: apply-oci 플러그인의 `apply-oci-ocir` sub-skill
 - Container Registry / WASL-IMAGE-Copier: ask-oci 의 [container-registry.md](../../../ask-oci/skills/ask-oci/references/known-answers/container-registry.md)
