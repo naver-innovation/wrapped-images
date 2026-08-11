@@ -52,9 +52,14 @@ RUN go mod download
 #   sigstore/fulcio 1.8.6  (fulcio HIGH 1건)
 #   sigstore/rekor 1.5.2   (rekor HIGH 1건)
 # ⚠️ 잔존 HIGH 3건 — github.com/docker/docker (CVE-2026-34040, 41567, 42306):
-#   CVE-2026-34040 의 fixed 29.3.1 은 모듈 경로가 github.com/moby/moby 로 이동해
-#   github.com/docker/docker 에는 v28.5.2+incompatible 이 최상위 버전이다
-#   (proxy.golang.org 목록에 v29.x 없음). 나머지 2건은 fixed 미출시.
+#   세 건의 픽스는 새 모듈 경로 github.com/moby/moby/v2 (>= 2.0.0-beta.8 / beta.14)에만 있다.
+#   Engine 29.x 는 moby/moby 저장소에 docker-v29.x 형식으로 태깅되고 go.mod 가
+#   module github.com/moby/moby/v2 라, 옛 경로(github.com/docker/docker,
+#   github.com/moby/moby)는 프록시 기준 v28.5.2+incompatible 에서 멈춰 있다.
+#   replace 로 새 경로에 얹는 것도 실패한다 — driverkit 이 import 하는
+#   docker/docker/pkg/archive 가 moby/moby/v2 에 없고(별도 모듈로 분리),
+#   docker/docker/api 와 moby/moby/api 가 동시에 요구돼 경로 충돌이 난다.
+#   세 건 모두 dockerd(데몬) 측 취약점이라 이 이미지에는 실행 경로가 없다.
 #   상세는 같은 디렉터리의 CVE-NOTES.md 참고.
 RUN go get \
         golang.org/x/crypto@v0.53.0 \
