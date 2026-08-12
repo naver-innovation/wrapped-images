@@ -31,6 +31,9 @@
 #      (base 의 centos-stream-10.repo 와 동일 정책: mirror.stream.centos.org, gpgcheck=0).
 #   4) cyrus-sasl-devel·cyrus-sasl-scram·openssl-devel·cmake 등은 el10 appstream/baseos 에 존재.
 #   5) jq 는 el10 baseos 에 존재. curl/bash/python3/tar/gzip 은 navix 기본 포함.
+#   6) which 를 빌드 의존에 넣는다. navix 에 which 가 없으면 librdkafka·kcat 의 mklove
+#      configure 가 INSTALL 을 빈 값으로 잡아, make install 이 'install -d' 대신 'd' 를
+#      실행하며 Error 127 로 죽는다 (CI 실측). cmake 를 쓰는 fluent-bit 은 영향 없다.
 ARG FLB_VERSION=5.1.0
 ARG LIBRDKAFKA_VERSION=2.15.0
 ARG KCAT_VERSION=1.7.1
@@ -55,7 +58,7 @@ RUN set -eux; \
       'enabled=1' \
       > /etc/yum.repos.d/centos-crb.repo; \
     dnf -y install \
-      cmake gcc gcc-c++ flex bison make \
+      cmake gcc gcc-c++ flex bison make which \
       zlib-ng-compat-devel openssl-devel libyaml-devel cyrus-sasl-devel \
       tar gzip; \
     dnf clean all
