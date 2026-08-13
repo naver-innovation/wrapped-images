@@ -1,11 +1,11 @@
 ---
 name: baseimage-oci
-description: "외부 오픈소스 이미지(Docker Hub 등)를 OCI 이미지 보안 정책에 따라 허용된 BaseImage(navix/ubuntu/alpine — 원본 계열에 맞춰 선택)로 교체(래핑)하는 워크플로. 원본 Dockerfile 탐색 → 계열 매핑으로 base 선택 → FROM 교체 → 필요 시 계열 차이(apt→dnf 등) 보정 → 빌드 → Trivy CVE 스캔 후 고칠 수 있는 취약점 전부 조치 + 잔존분은 CVE-NOTES.md 로 사유 기록 → OCIR push → 보안검수 안내. 공개 Dockerfile 이 없는 이미지(bitnami 등)는 같은 소프트웨어의 공개 대체 이미지(apache/공식 라이브러리 등) base 를 사용자 확인 후 교체. 그래도 없으면 예외 whitelist 안내. Use when: 사용자가 외부/오픈소스 도커 이미지(예: airflow, kafbat, nginx)를 OCI(KSA) 환경에서 쓰려 할 때, Dockerfile 의 FROM 이 외부 이미지일 때, 이미지 보안 정책/래핑/예외 whitelist 를 물을 때. Trigger keywords: baseimage, base image, navix, 외부 이미지, 오픈소스 이미지, 이미지 보안, 래핑, wrapping, docker hub, dockerfile from, 이미지 교체, whitelist, 이미지 검수, ocir push, alpine, ubuntu, trivy, cve, 취약점, 보안 스캔, cve-notes"
+description: "외부 오픈소스 이미지(Docker Hub 등)를 OCI 이미지 보안 정책에 따라 허용된 BaseImage(navix/ubuntu/alpine — 원본 계열에 맞춰 선택)로 교체(래핑)하는 워크플로. 원본 Dockerfile 탐색 → 계열 매핑으로 base 선택 → FROM 교체 → 필요 시 계열 차이(apt→dnf 등) 보정 → 런타임 USER 를 waslteam(uid 500)으로 마감(root 불가피 시 ROOT-REASON 기록) → 빌드 → Trivy CVE 스캔 후 고칠 수 있는 취약점 전부 조치 + 잔존분은 CVE-NOTES.md 로 사유 기록 → OCIR push → 보안검수 안내. 공개 Dockerfile 이 없는 이미지(bitnami 등)는 같은 소프트웨어의 공개 대체 이미지(apache/공식 라이브러리 등) base 를 사용자 확인 후 교체. 그래도 없으면 예외 whitelist 안내. Use when: 사용자가 외부/오픈소스 도커 이미지(예: airflow, kafbat, nginx)를 OCI(KSA) 환경에서 쓰려 할 때, Dockerfile 의 FROM 이 외부 이미지일 때, 이미지 보안 정책/래핑/예외 whitelist 를 물을 때. Trigger keywords: baseimage, base image, navix, 외부 이미지, 오픈소스 이미지, 이미지 보안, 래핑, wrapping, docker hub, dockerfile from, 이미지 교체, whitelist, 이미지 검수, ocir push, alpine, ubuntu, trivy, cve, 취약점, 보안 스캔, cve-notes, waslteam, uid 500, 비루트, nonroot, root 사용, user 계정, fsgroup, setgid, setcap, securitycontext, runasuser"
 user-invocable: true
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch
 argument-hint: <외부 이미지명 | Dockerfile 경로 | GitHub repo URL>
 metadata:
-  version: 0.3.0
+  version: 0.4.0
   author: taes.kim@navercorp.com
   tags: [wasl, oci, baseimage, navix, ocir, security, korean]
 ---
@@ -33,7 +33,7 @@ WASL 팀이 OCIR 에 제공하는 base image 3종. 원본 이미지와 **같은 
 
 > 위 태그가 현재 표준 제공 태그다 (alpine 3.23 / ubuntu 24.04 / navix 10.1). **alpine/ubuntu 는 OCIR push 진행 중** — pull 실패 시 push 완료 여부를 먼저 확인한다. 신규 태그 제공 여부는 `oci artifacts container image list --repository-name baseimage/<name>` 또는 OCI 콘솔에서 확인. naver 사내 BaseImage (`reg.navercorp.com/base/...`) 는 **비권장** — 사내 보안검수 허들 추가 + 사내 개발환경 정보 포함 가능성 (반출 검수 challenge 대상).
 
-> ⚠️ **`baseimage/*` 는 vanilla(clean) alpine/ubuntu 가 아니다.** userland·라이브러리가 이미 들어 있고(예: `baseimage/alpine` 에 busybox + **libcurl** 등), **기본 USER 가 비루트**다. 이 때문에 동일 계열 FROM 교체만 해도 빌드가 깨질 수 있다 → 아래 [필수 원칙](#필수-원칙--한-번에-통과시키기) 을 반드시 적용.
+> ⚠️ **`baseimage/*` 는 vanilla(clean) alpine/ubuntu 가 아니다.** userland·라이브러리가 이미 들어 있고(예: `baseimage/alpine` 에 busybox + **libcurl** 등), **기본 USER 가 비루트(`waslteam`, uid 500)** 다. 이 때문에 동일 계열 FROM 교체만 해도 빌드가 깨질 수 있다 → [런타임 계정 정책](#런타임-계정-정책--최종-user-는-waslteamuid-500) 과 [필수 원칙](#필수-원칙--한-번에-통과시키기) 을 반드시 적용.
 
 ### 계열 매핑 (원본 → 교체 base)
 
@@ -58,6 +58,73 @@ WASL 팀이 OCIR 에 제공하는 base image 3종. 원본 이미지와 **같은 
 
 인자가 없으면 사용자에게 위 셋 중 무엇인지 물어본다.
 
+## 런타임 계정 정책 — 최종 USER 는 waslteam(uid 500)
+
+**래핑 이미지가 최종적으로 실행되는 계정은 `waslteam`(uid 500, gid 500)이다.** root 실행은 최대한 피하고, 피할 수 없으면 **사유를 Dockerfile 에 적는다.**
+
+`waslteam` 은 baseimage 3종이 모두 갖고 있는 계정이라 새로 만들 필요가 없다 (2026-08-13 실측, `docker run --rm <base> id`):
+
+| base | 기본 USER | uid/gid | home | 기본 WORKDIR |
+|---|---|---|---|---|
+| `baseimage/alpine:3.23` | waslteam | 500/500 | `/home1/waslteam` | **`/root` (0700 root)** |
+| `baseimage/ubuntu:24.04` | waslteam | 500/500 | `/home1/waslteam` | `/` |
+| `baseimage/navix:10.1-wasl-centos` | waslteam | 500/500 | `/home1/waslteam` | `/` |
+
+- **계정을 새로 만들지 마라** — `useradd`/`adduser` 불필요. 특히 `useradd --uid 1000` 은 `baseimage/ubuntu` 가 이미 갖고 있는 `ubuntu`(1000) 와 충돌한다. gid 도 500 을 그대로 쓴다.
+- `USER root` 는 설치·시스템수정 구간에만 쓰고 **그 stage 끝에서 `USER waslteam` 으로 되돌린다.**
+- `baseimage/alpine` 은 기본 WORKDIR 가 `/root`(0700, root 소유)라 waslteam 이 들어가지 못한다 → **`WORKDIR` 를 앱 디렉터리나 `/home1/waslteam` 으로 명시**한다.
+- 권한강하 헬퍼는 base 마다 다르다: `setpriv` 는 ubuntu·navix 에만 있고 **alpine 에는 없다. `gosu`·`su-exec` 는 세 base 모두 없다** — 원본 entrypoint 가 이 도구들을 쓰면 직접 설치하거나 `USER waslteam` 으로 대체한다.
+
+### 원본이 root 로 돌던 이미지를 waslteam 으로 내리는 법
+
+root 가 런타임에 하던 일을 **빌드 타임 `USER root` 구간에서 미리 끝내 두고** 권한만 맞춘다.
+
+| 문제 | 빌드 타임 조치 |
+|---|---|
+| 앱 디렉터리·데이터 경로 쓰기 | `chown -R 500:500 <경로>` |
+| 런타임에 생기는 파일의 그룹 고정 | `chmod g+s <디렉터리>` — setgid 로 하위 생성 파일이 디렉터리 그룹을 상속 |
+| 임의 uid 로도 떠야 함 (restricted SCC 류) | `chgrp -R 0 <경로> && chmod -R g=u <경로>` — root 그룹에 소유자와 같은 권한 |
+| 1024 미만 포트 바인딩 | 포트를 8080 등으로 올리거나 `setcap 'cap_net_bind_service=+ep' <바이너리>` (root 구간에서 실행 후 USER 복귀) |
+| 로그·PID·캐시 경로 | 런타임 생성에 의존하지 말고 `mkdir -p` + `chown 500:500` 을 미리 |
+
+배포 매니페스트에는 아래를 함께 넣는다. **PVC·마운트 볼륨 소유권은 이미지의 `chown` 으로 못 고치므로 `fsGroup` 이 담당**한다:
+
+```yaml
+securityContext:
+  runAsUser: 500
+  runAsGroup: 500
+  fsGroup: 500          # 마운트 볼륨을 gid 500 소유로 — PVC 쓰기 권한
+  runAsNonRoot: true
+```
+
+### root 가 불가피하면 — 사유를 Dockerfile 에 남긴다
+
+출하 stage 를 root 로 둬야 하면 해당 `USER root` 바로 위에 사유 코드와 설명을 적는다:
+
+```dockerfile
+# ROOT-REASON: KERNEL_CAP — falco 는 런타임에 eBPF/커널 모듈을 적재해야 해서 root 가 필요하다
+USER root
+```
+
+| 사유 코드 | 뜻 |
+|---|---|
+| `ENTRYPOINT_DROP` | entrypoint 가 root 로 시작해 chown 뒤 `gosu`/`su-exec`/`setpriv` 로 권한강하 (redis·mysql·zookeeper 공식 이미지). 실제 앱 프로세스는 비루트로 떨어진다 |
+| `KERNEL_CAP` | 커널 모듈·eBPF·디바이스 접근이 필요 (falco 등) |
+| `HOST_MOUNT` | 호스트 경로·소켓(`/var/run/docker.sock` 등)을 root 권한으로 읽어야 함 |
+| `PORT_LOW` | 1024 미만 포트가 고정이고 `setcap` 으로도 풀리지 않음 |
+| `UPSTREAM_HARDCODED` | 업스트림 스크립트가 root 전용 경로에 쓰도록 박혀 있어 고치면 동작이 깨짐 (스모크로 확인한 경우만) |
+
+- 사유 없이 root 로 끝나는 Dockerfile 은 검수에서 걸린다. 코드와 함께 **왜 waslteam 으로 못 내렸는지**를 한 줄로 적는다.
+- `UPSTREAM_HARDCODED` 는 "해보니 안 되더라"가 아니라 **어떤 명령이 어떻게 깨졌는지**를 적어야 인정된다.
+
+### 검증
+
+```bash
+docker inspect --format '{{.Config.User}} {{.Config.WorkingDir}}' <local-tag>   # waslteam(또는 500) 기대
+docker run --rm --entrypoint sh <local-tag> -c 'id; pwd'                        # uid=500(waslteam), CWD traverse 가능
+docker run --rm --entrypoint sh <local-tag> -c 'touch <데이터경로>/.w && echo writable'
+```
+
 ## 필수 원칙 — 한 번에 통과시키기
 
 > **빌드는 보통 로컬이 아니라 merge 후 CI 에서 수행된다.** 로컬 `docker build` 로 미리 검증하지 못하는 경우가 많으므로 **Dockerfile 은 처음부터 맞아야 한다.** 아래는 재수정 루프를 막기 위한 핵심 원칙이다 (실제 재수정 사례에서 도출). 단, **로컬에 docker + OCIR 인증이 있으면 [Step 4.5](#step-45--로컬-빌드실행-테스트-선택--사용자-확인-후) 로 미리 빌드·실행을 검증**할 수 있다(권장 — 재수정 루프를 가장 확실히 줄인다).
@@ -67,11 +134,10 @@ WASL 팀이 OCIR 에 제공하는 base image 3종. 원본 이미지와 **같은 
    - 원본이 clean alpine/scratch 를 가정해 쓴 `ln -s`, `mkdir` 를 그대로 옮기면 `File exists` 로 실패한다.
    - **고정 uid/gid 가 base 에 이미 선점돼 있을 수 있다**: `baseimage/ubuntu:24.04` 는 **uid/gid 1000=`ubuntu` 유저**, `baseimage/navix` 는 **999** 등. `useradd --uid 1000` 가 실패하고 `|| true` 로 삼켜지면 정작 유저가 안 만들어져 **다음 `chown` 이 깨진다.** → 충돌 계정을 먼저 제거(`userdel -r ubuntu || true`)하고 원하는 uid 로 만들거나, 고정 id 를 포기하고 폴백(`useradd --uid N ... || useradd ...`). 생성 후 유저 존재를 보장하고 chown.
    - 단순히 `... || true` 로 덮지 말 것 — 실패가 **뒤 단계에서** 터진다. (로컬 빌드 테스트로 zookeeper/mysql 에서 실제로 잡힌 사례.)
-2. **런타임 USER·WORKDIR 를 원본과 "일치"시킨다 (단정 금지 — `docker inspect` 로 확인).** baseimage 기본 USER 는 **비루트**(alpine=uid 500, ubuntu=uid 1000)이고 기본 **WORKDIR 는 `/root`(0700)** 다. 설치·시스템수정 단계 앞에 `USER root`, **런타임 stage 끝에서는 막연히 "비루트로 복귀"가 아니라 원본의 실제 USER/WORKDIR 로 복원**한다.
-   - **원본이 root 로 실행**(distroless/static 의 비-nonroot 태그, scratch 등은 USER 미지정 = root)이면 런타임 stage 에 **`USER root` + `WORKDIR /` 를 명시**해야 한다. 빼먹으면 비루트(uid 500/1000)로 떨어지고, 게다가 CWD 가 `/root`(0700)라 비루트가 traverse 못 해 `kubectl apply -f crds/` 같은 **상대경로가 `stat: permission denied`** 로 죽는다. (driver-crds·argo-events 실측)
-   - **원본이 비루트면 그 "정확한 uid"** 로 맞춘다 — 비슷한 값으로 대충 쓰지 말 것(예: kyverno 원본 65532 를 65534 로 잘못 써 불일치한 사례).
-   - 확인: `docker inspect --format '{{.Config.User}} {{.Config.WorkingDir}}' <원본>` (User 가 빈 값/`0` = root). 이름 USER(`nobody` 등)는 `getent passwd <name>` 로 숫자 uid 까지 대조.
-   - **예외**: `redis`·`zookeeper` 등 공식 이미지는 entrypoint 가 uid≠0 를 감지해 권한강하(`gosu`)를 건너뛰고 그대로 도는 설계라 **의도적 비루트가 정상**이다(데이터 디렉터리도 빌드 때 미리 chown). entrypoint 동작을 확인하고 무턱대고 `USER root` 강제하지 말 것.
+2. **런타임 USER 는 `waslteam`(uid 500) 으로 끝낸다 — root 는 최후수단이고, 쓰면 사유를 남긴다.** 설치·시스템수정 단계 앞에 `USER root`, **출하 stage 끝에서 `USER waslteam` 으로 복귀**한다. 원본이 root(distroless/scratch·USER 미지정)나 다른 비루트 uid(65532 등)로 돌더라도 **waslteam 으로 맞추고**, 원본이 root 로 하던 준비 작업(디렉터리 생성·소유권·capability)은 빌드 타임에 끝낸다. 상세: [런타임 계정 정책](#런타임-계정-정책--최종-user-는-waslteamuid-500)
+   - 원본 확인은 그대로 필요하다: `docker inspect --format '{{.Config.User}} {{.Config.WorkingDir}}' <원본>` — **무엇을 `chown 500:500` 해야 하는지가 거기서 나온다.** (User 가 빈 값/`0` = root. 이름 USER 는 `getent passwd <name>` 로 숫자 uid 대조.)
+   - **`WORKDIR` 를 명시하라.** `baseimage/alpine` 의 기본 WORKDIR 는 `/root`(0700 root 소유)라 waslteam 이 traverse 하지 못해 `kubectl apply -f crds/` 같은 **상대경로가 `stat: permission denied`** 로 죽는다. (driver-crds·argo-events 실측)
+   - **예외**: `redis`·`zookeeper` 등 공식 이미지는 entrypoint 가 root 로 시작해 chown 뒤 `gosu` 로 권한강하하거나, uid≠0 를 감지해 강하를 건너뛰는 설계다. entrypoint 동작을 먼저 확인하고, root 유지가 맞으면 `ROOT-REASON: ENTRYPOINT_DROP` 으로 사유를 적는다.
 3. **원본 multi-stage 구조를 충실히 보존한다 — 스테이지를 합치지(collapse) 마라.**
    - 빌드 전용(throwaway) 스테이지는 **원본 pinned base(golang/node 등)를 그대로 유지**해도 된다. 정책 대상은 *출하되는* 런타임 stage 뿐이다.
    - 각 언어 빌더는 **그 언어 전용 base** 를 써라(JS→`node:*`, Go→`golang:*`). 빌더 base 를 임의 계열로 바꾸거나 패키지 매니저를 바꾸면(yarn berry↔classic 등) 툴체인이 깨진다.
@@ -120,7 +186,7 @@ WASL 팀이 OCIR 에 제공하는 base image 3종. 원본 이미지와 **같은 
 3. 선택한 base 의 제공 태그를 OCIR 에서 확인한다.
 4. **같은 계열로 교체하는 경우**: 패키지 매니저 보정 불필요 — 단, [필수 원칙](#필수-원칙--한-번에-통과시키기)(비루트 USER, idempotent 명령, 선존재 라이브러리) 은 동일 계열에도 적용된다.
 5. **계열을 건너 교체하는 경우** (navix 통일 필요 등): 차이를 목록화 — 패키지 매니저(`apt`/`apk`→`dnf`), 패키지명, 경로/사용자. 상세: [references/build-troubleshooting.md](references/build-troubleshooting.md)
-6. 어느 경우든 base 의 기본 USER·홈 디렉토리·쉘은 단정하지 말고 `docker run --rm <base> id` / `docker inspect` 로 확인 후 반영한다. (확인 불가 시 비루트 가정 + `USER root` 보정.)
+6. base 의 기본 USER·홈·WORKDIR 는 단정하지 말고 `docker run --rm <base> id` / `docker inspect` 로 확인한다. 현재 3종 모두 `waslteam`(500/500) 이며, **출하 stage 는 이 계정으로 끝낸다** → [런타임 계정 정책](#런타임-계정-정책--최종-user-는-waslteamuid-500). 원본이 root 로 돌았다면 root 가 하던 준비 작업을 빌드 타임 `chown 500:500`·`chmod g+s`·`setcap` 으로 옮긴다.
 
 ### Step 3 — FROM 교체 + Dockerfile 수정
 
@@ -129,14 +195,20 @@ WASL 팀이 OCIR 에 제공하는 base image 3종. 원본 이미지와 **같은 
 ```dockerfile
 # 원본: FROM debian:bookworm-slim   → debian 계열이므로 baseimage/ubuntu 선택
 FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/ubuntu:24.04
-USER root                                  # baseimage 기본 USER 가 비루트 → 설치 단계 위해 root
+USER root                                  # 설치 단계만 root
 # 이하 원본 Dockerfile 의 빌드 단계 유지 (생성 명령은 mkdir -p / ln -sf 로 idempotent)
+RUN mkdir -p /var/lib/app && chown -R 500:500 /var/lib/app && chmod g+s /var/lib/app
+WORKDIR /var/lib/app
+USER waslteam                              # 출하 계정 = uid 500
 ```
 
 ```dockerfile
 # 원본: FROM alpine:3.21   → baseimage/alpine 선택 (musl 계열 유지)
 FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/alpine:3.23
 USER root
+# ... 설치 ...
+WORKDIR /home1/waslteam                    # alpine base 기본 WORKDIR 는 /root(0700) — 반드시 교체
+USER waslteam
 ```
 
 **계열 전환 (RHEL 파생 → navix, 또는 동일 계열 base 사용 불가 시):**
@@ -170,8 +242,10 @@ FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/alpine:3.23
 USER root                                              # 비루트 기본 → root 전환
 COPY --from=go-builder /app/bin/ /usr/local/bin/       # COPY --from 관계 그대로 유지
 COPY --from=js-builder /app/public ./public
-RUN mkdir -p /var/lib/app && ln -sf /usr/local/bin/app /usr/bin/app   # idempotent
-USER 65534                                             # 원본 런타임 비루트 USER 복귀
+RUN mkdir -p /var/lib/app && ln -sf /usr/local/bin/app /usr/bin/app \
+ && chown -R 500:500 /var/lib/app && chmod g+s /var/lib/app          # idempotent + waslteam 쓰기 권한
+WORKDIR /var/lib/app                                   # alpine base 기본 /root(0700) 회피
+USER waslteam                                          # 출하 계정 = uid 500 (원본이 65534 여도 waslteam 으로 통일)
 CMD ["app"]
 ```
 
@@ -226,6 +300,7 @@ docker build -t <local-tag> <Dockerfile-dir>
 | JRE/라이브러리 앱 | 엔트리포인트 help/version: `docker run --rm <local-tag> --version` (또는 `--help`) |
 
 - 서버류는 필수 ENV(예: `MYSQL_ROOT_PASSWORD`, `ALLOW_ANONYMOUS_LOGIN`)가 없으면 기동이 의도적으로 멈출 수 있다 → 최소 ENV 를 주거나 "설정 미비로 인한 정상 종료"인지 로그로 판별한다.
+- **계정 확인은 스모크와 같이 돌린다**: `docker inspect --format '{{.Config.User}} {{.Config.WorkingDir}}' <local-tag>` 가 waslteam/500 인지, `docker run --rm --entrypoint sh <local-tag> -c 'id; pwd'` 가 uid=500 인지, 데이터 경로에 쓰기가 되는지. root 로 남았으면 `ROOT-REASON` 주석이 있어야 한다 → [런타임 계정 정책](#런타임-계정-정책--최종-user-는-waslteamuid-500)
 
 **3) 결과 보고**: 빌드 성공/실패 + 스모크 통과/실패(또는 아키텍처 불일치로 생략)를 명시한다. 모두 통과하면 Step 6 체크리스트의 "빌드 성공 + 컨테이너 기동 스모크" 항목을 충족한 것으로 표시한다.
 
@@ -305,6 +380,9 @@ docker push me-riyadh-1.ocir.io/<TENANCY_NAMESPACE>/<APP_NS>/<IMAGE>:<TAG>
 ### Step 6 — 보안검수 및 마무리 체크리스트
 
 - [ ] FROM 이 허용 BaseImage(navix/ubuntu/alpine)로 교체됨 (또는 예외 whitelist 승인 완료)
+- [ ] **런타임 USER 가 `waslteam`(uid 500)** — `docker inspect` 로 확인. root 로 남았다면 `ROOT-REASON: <코드>` 주석 기재 + 사용자 보고 완료
+- [ ] **WORKDIR 명시** + 데이터·로그 경로가 uid 500 으로 쓰기 가능 (`chown 500:500`, 필요 시 `chmod g+s`)
+- [ ] 볼륨을 쓰는 이미지면 배포 매니페스트에 `runAsUser/runAsGroup/fsGroup: 500` 안내
 - [ ] 빌드 성공 + 컨테이너 기동 스모크 확인 (`docker run --rm <이미지> <헬스체크>`)
 - [ ] **Trivy 스캔 수행** (Step 4.6) — 스캔 대상 태그·아키텍처·Trivy 버전 명시
 - [ ] **고칠 수 있는 취약점 전부 조치** (OS 패키지 업그레이드 / 도구 버전 상향 / 잔여물 삭제 등) + 조치 후 재스캔
@@ -361,7 +439,8 @@ docker push me-riyadh-1.ocir.io/<TENANCY_NAMESPACE>/<APP_NS>/<IMAGE>:<TAG>
 1. **판정**: 대상 이미지의 분기 결과 (정책 준수 / 래핑 필요 / 대체 이미지 트랙 / 예외 트랙)
 2. **Dockerfile diff**: 원본 대비 변경점 (unified diff) — [필수 원칙](#필수-원칙--한-번에-통과시키기) 반영 여부 명시
 3. **실행 명령**: build / tag / push 명령 시퀀스
-4. **로컬 테스트 결과**: (사용자 동의 후 수행한 경우) 빌드 성공/실패 + 스모크 통과/생략(아키텍처 불일치) — Step 4.5
+4. **로컬 테스트 결과**: (사용자 동의 후 수행한 경우) 빌드 성공/실패 + 스모크 통과/생략(아키텍처 불일치) + **실행 계정 확인 결과(`id` 출력)** — Step 4.5
+4-1. **계정 판정**: 최종 USER (waslteam/500 기대) · WORKDIR · root 유지 시 `ROOT-REASON` 코드와 사유 · 필요한 `fsGroup`/`setcap` 안내
 5. **CVE 스캔 결과**: 조치 전/후 `CRITICAL n / HIGH m` + 원본 대비 비교, 조치한 항목 목록, 잔존 항목과 사유 코드, `CVE-NOTES.md` 경로 (스캔을 못 했으면 그 사유) — Step 4.6
 6. **체크리스트**: Step 6 항목
 7. **다음 단계**: 보안검수 또는 (대체 이미지 확인 / 예외 whitelist) 요청 안내
