@@ -21,8 +21,15 @@
 # upstream published 이미지 설정 — docker buildx imagetools inspect 로 확인해 맞춘다:
 #   USER=(빈값 = root)   WORKDIR=(빈값 = /)   ENTRYPOINT=["/nats-streaming-server"]
 #   CMD=["-m","8222"]    EXPOSE 4222 8222
-#   baseimage/alpine 은 기본 USER 가 비루트이고 기본 WORKDIR 가 /root(0700) 이라
-#   런타임 stage 에 USER root 와 WORKDIR / 를 명시해야 원본과 동작이 같아진다.
+#
+# 실행 계정 — 원본과 일부러 다르게 간다
+#   원본은 root 로 돌지만 이 래핑본은 baseimage 기본 계정 waslteam(uid 500)으로 돌린다.
+#   설치 단계(apk del, COPY, ln)만 root 로 하고 마지막에 USER waslteam 으로 내린다.
+#   4222/8222 둘 다 비특권 포트고 기본 스토어가 메모리라 비루트로 문제없이 뜬다
+#   (검증: uid 500 으로 기동 후 "Streaming Server is ready", /varz 200).
+#   주의 — `-store file -dir <경로>` 로 파일 스토어를 쓰면 그 경로가 uid 500 쓰기 가능해야 한다.
+#   쿠버네티스라면 PVC 에 fsGroup: 500 을 주거나 initContainer 로 소유권을 맞춘다.
+#   baseimage 기본 WORKDIR 가 /root(0700) 이라 비루트가 못 들어간다. 원본과 같이 / 로 되돌린다.
 #
 # 남는 CVE: bind-libs / bind-tools / c-ares / curl / libcurl HIGH 는 baseimage/alpine:3.23 이
 #   자체적으로 담고 있는 패키지다. 이 Dockerfile 이 설치한 게 아니고 모든 wrap 이 똑같이 상속하므로
@@ -53,9 +60,9 @@ LABEL org.opencontainers.image.source="https://github.com/nats-io/nats-streaming
 LABEL org.opencontainers.image.description="NATS Streaming Server (STAN) 0.25.6, built from source with patched dependencies, wrapped onto baseimage/alpine:3.23"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
-# baseimage 기본 USER 가 비루트 -> 원본(root)에 맞춘다
+# 설치 단계(apk del, COPY, ln)만 root 로 수행한다. 실행 계정은 파일 끝에서 waslteam 으로 내린다.
 USER root
-# baseimage 기본 WORKDIR 은 /root(0700) -> 원본과 같이 / 로 되돌린다
+# baseimage 기본 WORKDIR 은 /root(0700) 이라 비루트가 못 들어간다 -> 원본과 같이 / 로 되돌린다
 WORKDIR /
 
 # ca-certificates 를 apk 로 설치하지 않는다. baseimage/alpine 에 CA 번들이 이미 박혀 있고
@@ -74,9 +81,10 @@ COPY --from=builder /out/nats-streaming-server /usr/local/bin/nats-streaming-ser
 # upstream 의 ENTRYPOINT 경로가 /nats-streaming-server 다. 링크로 그 경로를 만들어 둔다.
 RUN ln -sf /usr/local/bin/nats-streaming-server /nats-streaming-server
 
-# upstream 공식 이미지는 root 로 동작하는 정적 단일 바이너리 이미지 (별도 USER 라인 없음).
-# 동일하게 root 유지하여 동작을 보존한다.
 EXPOSE 4222 8222
+
+# 실행 계정은 baseimage 기본 비루트 계정 (uid 500). 4222/8222 둘 다 비특권 포트라 그대로 바인딩된다.
+USER waslteam
 
 ENTRYPOINT ["/nats-streaming-server"]
 CMD ["-m", "8222"]
