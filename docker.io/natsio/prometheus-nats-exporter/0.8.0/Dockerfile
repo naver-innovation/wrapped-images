@@ -21,8 +21,13 @@
 #   USER=(빈값 = root)   WORKDIR=/   ENTRYPOINT=["/prometheus-nats-exporter"]
 #   CMD=["--help"]       EXPOSE 7777/tcp
 #   멀티아치: linux/amd64, linux/arm64, linux/arm/v6, linux/arm/v7
-#   baseimage/alpine 은 기본 USER 가 비루트이고 기본 WORKDIR 가 /root(0700) 이라
-#   런타임 stage 에 USER root 와 WORKDIR / 를 명시해야 원본과 동작이 같아진다.
+#
+# 실행 계정 — 원본과 일부러 다르게 간다
+#   원본은 root 로 돌지만 이 래핑본은 baseimage 기본 계정 waslteam(uid 500)으로 돌린다.
+#   설치 단계(apk del, ln)만 root 로 하고 마지막에 USER waslteam 으로 내린다.
+#   exporter 는 7777(비특권 포트)만 열고 파일을 쓰지 않아 비루트로 문제없이 뜬다
+#   (검증: uid 500 으로 기동 후 /metrics 200).
+#   baseimage 기본 WORKDIR 가 /root(0700) 이라 비루트가 못 들어간다. 원본과 같이 / 로 되돌린다.
 #
 # 남는 CVE: baseimage/alpine:3.23 이 자체적으로 담고 있는 패키지분은 이 Dockerfile 이 설치한 게
 #   아니고 모든 wrap 이 똑같이 상속한다. 근본 해결은 WASL 팀의 base 이미지 갱신이다.
@@ -39,9 +44,9 @@ LABEL org.opencontainers.image.description="Prometheus exporter for NATS server 
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.version="0.8.0"
 
-# baseimage 기본 USER 가 비루트 -> 원본(root)에 맞춘다
+# 설치 단계(apk del, ln)만 root 로 수행한다. 실행 계정은 파일 끝에서 waslteam 으로 내린다.
 USER root
-# baseimage 기본 WORKDIR 은 /root(0700) -> 원본과 같이 / 로 되돌린다
+# baseimage 기본 WORKDIR 은 /root(0700) 이라 비루트가 못 들어간다 -> 원본과 같이 / 로 되돌린다
 WORKDIR /
 
 # ca-certificates 를 apk 로 설치하지 않는다. baseimage/alpine 에 CA 번들이 이미 박혀 있고
@@ -63,7 +68,10 @@ RUN ln -sf /usr/local/bin/prometheus-nats-exporter /prometheus-nats-exporter
 
 EXPOSE 7777
 
-# 원본과 동일 실행 사양. 인자 없이 뜨면 원본처럼 --help 를 찍고 끝난다
+# 실행 계정은 baseimage 기본 비루트 계정 (uid 500). 7777 은 비특권 포트라 그대로 바인딩된다.
+USER waslteam
+
+# 인자 없이 뜨면 원본처럼 --help 를 찍고 끝난다
 # (운영 파드는 args 로 -connz -varz http://nats:8222 같은 값을 넘겨 CMD 를 덮어쓴다).
 ENTRYPOINT ["/prometheus-nats-exporter"]
 CMD ["--help"]
