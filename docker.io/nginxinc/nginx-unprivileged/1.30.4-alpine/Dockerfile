@@ -212,4 +212,8 @@ RUN set -x \
 # Bring in curl and ca-certificates to make registering on DNS SD easier
     && apk add --no-cache curl ca-certificates
 
+# CVE remediation (cve-remediation.md 레시피 A): baseimage 선탑재 bind/c-ares + curl 의
+# HIGH 19건 — v3.23 저장소에 패치본 존재 확인, 마지막 설치 뒤 전체 upgrade
+RUN apk upgrade --no-cache
+
 USER $UID
