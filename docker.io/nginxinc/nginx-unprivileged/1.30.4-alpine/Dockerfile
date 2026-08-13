@@ -1,0 +1,219 @@
+# Wrapped for OCI(KSA) image policy — FROM replaced with approved baseimage/alpine.
+# Origin: https://github.com/nginx/docker-nginx-unprivileged
+#   - stable/alpine-slim/Dockerfile + stable/alpine/Dockerfile (NGINX_VERSION=1.30.4)
+#   - upstream tag 1.30.4 미발행 시점이라 main 의 stable/ (1.30.4 pinned) 기준, entrypoint 스크립트 5종 동일 출처 벤더링
+# Base mapping: alpine:3.24 → baseimage/alpine:3.23 (동일 계열 musl/apk — nginx.org v3.23 저장소에 1.30.4 및 모듈 패키지 존재 확인)
+# 보정: USER root + WORKDIR / (baseimage 는 비루트 기본 + WORKDIR /root), mkdir -p (idempotent)
+
+# ---- stage 1: alpine-slim (원본 stable/alpine-slim/Dockerfile) ----
+ARG IMAGE=me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/alpine:3.23
+FROM $IMAGE AS alpine-slim
+
+LABEL maintainer="NGINX Docker Maintainers <docker-maint@nginx.com>"
+
+ENV NGINX_VERSION=1.30.4
+ENV PKG_RELEASE=1
+ENV DYNPKG_RELEASE=1
+
+ARG UID=101
+ARG GID=101
+
+# baseimage/alpine 은 clean base 가 아님 — 기본 USER 비루트, WORKDIR /root(0700)
+USER root
+WORKDIR /
+
+RUN set -x \
+# create nginx user/group first, to be consistent throughout docker variants
+    && addgroup -g $GID -S nginx || true \
+    && adduser -S -D -H -u $UID -h /var/cache/nginx -s /sbin/nologin -G nginx -g nginx nginx || true \
+    && apkArch="$(cat /etc/apk/arch)" \
+    && nginxPackages=" \
+        nginx=${NGINX_VERSION}-r${PKG_RELEASE} \
+    " \
+# install prerequisites for public key and pkg-oss checks
+    && apk add --no-cache --virtual .checksum-deps \
+        openssl \
+    && case "$apkArch" in \
+        x86_64|aarch64) \
+# arches officially built by upstream
+            set -x \
+            && KEY_SHA512="e09fa32f0a0eab2b879ccbbc4d0e4fb9751486eedda75e35fac65802cc9faa266425edf83e261137a2f4d16281ce2c1a5f4502930fe75154723da014214f0655" \
+            && wget -O /tmp/nginx_signing.rsa.pub https://nginx.org/keys/nginx_signing.rsa.pub \
+            && if echo "$KEY_SHA512 */tmp/nginx_signing.rsa.pub" | sha512sum -c -; then \
+                echo "key verification succeeded!"; \
+                mv /tmp/nginx_signing.rsa.pub /etc/apk/keys/; \
+            else \
+                echo "key verification failed!"; \
+                exit 1; \
+            fi \
+            && apk add -X "https://nginx.org/packages/alpine/v$(egrep -o '^[0-9]+\.[0-9]+' /etc/alpine-release)/main" --no-cache $nginxPackages \
+            ;; \
+        *) \
+# we're on an architecture upstream doesn't officially build for
+# let's build binaries from the published packaging sources
+            set -x \
+            && tempDir="$(mktemp -d)" \
+            && chown nobody:nobody $tempDir \
+            && apk add --no-cache --virtual .build-deps \
+                gcc \
+                libc-dev \
+                make \
+                openssl-dev \
+                pcre2-dev \
+                zlib-dev \
+                linux-headers \
+                bash \
+                alpine-sdk \
+                findutils \
+                curl \
+            && su nobody -s /bin/sh -c " \
+                export HOME=${tempDir} \
+                && cd ${tempDir} \
+                && curl -f -L -O https://github.com/nginx/pkg-oss/archive/${NGINX_VERSION}-${PKG_RELEASE}.tar.gz \
+                && PKGOSSCHECKSUM=\"884cbfae1bfc1f8025795c4232780c71086837022321a2c6eba3654b6507e87f9446c7e88a711fdb6f7360000e25bea4b75bdcac13b32db8acd7e0e9fe1dcd3d *${NGINX_VERSION}-${PKG_RELEASE}.tar.gz\" \
+                && if [ \"\$(openssl sha512 -r ${NGINX_VERSION}-${PKG_RELEASE}.tar.gz)\" = \"\$PKGOSSCHECKSUM\" ]; then \
+                    echo \"pkg-oss tarball checksum verification succeeded!\"; \
+                else \
+                    echo \"pkg-oss tarball checksum verification failed!\"; \
+                    exit 1; \
+                fi \
+                && tar xzvf ${NGINX_VERSION}-${PKG_RELEASE}.tar.gz \
+                && cd pkg-oss-${NGINX_VERSION}-${PKG_RELEASE} \
+                && cd alpine \
+                && make base \
+                && apk index --allow-untrusted -o ${tempDir}/packages/alpine/${apkArch}/APKINDEX.tar.gz ${tempDir}/packages/alpine/${apkArch}/*.apk \
+                && abuild-sign -k ${tempDir}/.abuild/abuild-key.rsa ${tempDir}/packages/alpine/${apkArch}/APKINDEX.tar.gz \
+                " \
+            && cp ${tempDir}/.abuild/abuild-key.rsa.pub /etc/apk/keys/ \
+            && apk del --no-network .build-deps \
+            && apk add -X ${tempDir}/packages/alpine/ --no-cache $nginxPackages \
+            ;; \
+    esac \
+# remove checksum deps
+    && apk del --no-network .checksum-deps \
+# if we have leftovers from building, let's purge them (including extra, unnecessary build deps)
+    && if [ -n "$tempDir" ]; then rm -rf "$tempDir"; fi \
+    && if [ -f "/etc/apk/keys/abuild-key.rsa.pub" ]; then rm -f /etc/apk/keys/abuild-key.rsa.pub; fi \
+# Add `envsubst` for templating environment variables
+    && apk add --no-cache gettext-envsubst \
+# Bring in tzdata so users could set the timezones through the environment
+# variables
+    && apk add --no-cache tzdata \
+# forward request and error logs to docker log collector
+    && ln -sf /dev/stdout /var/log/nginx/access.log \
+    && ln -sf /dev/stderr /var/log/nginx/error.log \
+# create a docker-entrypoint.d directory (idempotent — baseimage 선존재 파일 대비)
+    && mkdir -p /docker-entrypoint.d
+
+# implement changes required to run NGINX as an unprivileged user
+RUN sed -i 's,listen       80;,listen       8080;,' /etc/nginx/conf.d/default.conf \
+    && sed -i '/user  nginx;/d' /etc/nginx/nginx.conf \
+    && sed -i 's,\(/var\)\{0\,1\}/run/nginx.pid,/tmp/nginx.pid,' /etc/nginx/nginx.conf \
+    && sed -i "/^http {/a \    proxy_temp_path /tmp/proxy_temp;\n    client_body_temp_path /tmp/client_temp;\n    fastcgi_temp_path /tmp/fastcgi_temp;\n    uwsgi_temp_path /tmp/uwsgi_temp;\n    scgi_temp_path /tmp/scgi_temp;\n" /etc/nginx/nginx.conf \
+# nginx user must own the cache and etc directory to write cache and tweak the nginx config
+    && chown -R $UID:0 /var/cache/nginx \
+    && chmod -R g+w /var/cache/nginx \
+    && chown -R $UID:0 /etc/nginx \
+    && chmod -R g+w /etc/nginx
+
+COPY docker-entrypoint.sh /
+COPY 10-listen-on-ipv6-by-default.sh /docker-entrypoint.d
+COPY 15-local-resolvers.envsh /docker-entrypoint.d
+COPY 20-envsubst-on-templates.sh /docker-entrypoint.d
+COPY 30-tune-worker-processes.sh /docker-entrypoint.d
+ENTRYPOINT ["/docker-entrypoint.sh"]
+
+EXPOSE 8080
+
+STOPSIGNAL SIGQUIT
+
+USER $UID
+
+CMD ["nginx", "-g", "daemon off;"]
+
+# ---- stage 2: alpine (원본 stable/alpine/Dockerfile — 동적 모듈 추가) ----
+FROM alpine-slim
+
+ENV NJS_VERSION=1.0.0
+ENV NJS_RELEASE=1
+
+ARG UID=101
+ARG GID=101
+
+USER root
+
+RUN set -x \
+    && apkArch="$(cat /etc/apk/arch)" \
+    && nginxPackages=" \
+        nginx=${NGINX_VERSION}-r${PKG_RELEASE} \
+        nginx-module-xslt=${NGINX_VERSION}-r${DYNPKG_RELEASE} \
+        nginx-module-geoip=${NGINX_VERSION}-r${DYNPKG_RELEASE} \
+        nginx-module-image-filter=${NGINX_VERSION}-r${DYNPKG_RELEASE} \
+        nginx-module-njs=${NGINX_VERSION}.${NJS_VERSION}-r${NJS_RELEASE} \
+    " \
+# install prerequisites for public key and pkg-oss checks
+    && apk add --no-cache --virtual .checksum-deps \
+        openssl \
+    && case "$apkArch" in \
+        x86_64|aarch64) \
+# arches officially built by upstream
+            apk add -X "https://nginx.org/packages/alpine/v$(egrep -o '^[0-9]+\.[0-9]+' /etc/alpine-release)/main" --no-cache $nginxPackages \
+            ;; \
+        *) \
+# we're on an architecture upstream doesn't officially build for
+# let's build binaries from the published packaging sources
+            set -x \
+            && tempDir="$(mktemp -d)" \
+            && chown nobody:nobody $tempDir \
+            && apk add --no-cache --virtual .build-deps \
+                gcc \
+                libc-dev \
+                make \
+                openssl-dev \
+                pcre2-dev \
+                zlib-dev \
+                linux-headers \
+                libxslt-dev \
+                gd-dev \
+                geoip-dev \
+                libedit-dev \
+                bash \
+                alpine-sdk \
+                findutils \
+                curl \
+            && su nobody -s /bin/sh -c " \
+                export HOME=${tempDir} \
+                && cd ${tempDir} \
+                && curl -f -L -O https://github.com/nginx/pkg-oss/archive/${NGINX_VERSION}-${PKG_RELEASE}.tar.gz \
+                && PKGOSSCHECKSUM=\"884cbfae1bfc1f8025795c4232780c71086837022321a2c6eba3654b6507e87f9446c7e88a711fdb6f7360000e25bea4b75bdcac13b32db8acd7e0e9fe1dcd3d *${NGINX_VERSION}-${PKG_RELEASE}.tar.gz\" \
+                && if [ \"\$(openssl sha512 -r ${NGINX_VERSION}-${PKG_RELEASE}.tar.gz)\" = \"\$PKGOSSCHECKSUM\" ]; then \
+                    echo \"pkg-oss tarball checksum verification succeeded!\"; \
+                else \
+                    echo \"pkg-oss tarball checksum verification failed!\"; \
+                    exit 1; \
+                fi \
+                && tar xzvf ${NGINX_VERSION}-${PKG_RELEASE}.tar.gz \
+                && cd pkg-oss-${NGINX_VERSION}-${PKG_RELEASE} \
+                && cd alpine \
+                && make module-geoip module-image-filter module-njs module-xslt \
+                && apk index --allow-untrusted -o ${tempDir}/packages/alpine/${apkArch}/APKINDEX.tar.gz ${tempDir}/packages/alpine/${apkArch}/*.apk \
+                && abuild-sign -k ${tempDir}/.abuild/abuild-key.rsa ${tempDir}/packages/alpine/${apkArch}/APKINDEX.tar.gz \
+                " \
+            && cp ${tempDir}/.abuild/abuild-key.rsa.pub /etc/apk/keys/ \
+            && apk del --no-network .build-deps \
+            && apk add -X ${tempDir}/packages/alpine/ --no-cache $nginxPackages \
+            ;; \
+    esac \
+# remove checksum deps
+    && apk del --no-network .checksum-deps \
+# if we have leftovers from building, let's purge them (including extra, unnecessary build deps)
+    && if [ -n "$tempDir" ]; then rm -rf "$tempDir"; fi \
+    && if [ -f "/etc/apk/keys/abuild-key.rsa.pub" ]; then rm -f /etc/apk/keys/abuild-key.rsa.pub; fi \
+# Bring in curl and ca-certificates to make registering on DNS SD easier
+    && apk add --no-cache curl ca-certificates
+
+# CVE remediation (cve-remediation.md 레시피 A): baseimage 선탑재 bind/c-ares + curl 의
+# HIGH 19건 — v3.23 저장소에 패치본 존재 확인, 마지막 설치 뒤 전체 upgrade
+RUN apk upgrade --no-cache
+
+USER $UID
