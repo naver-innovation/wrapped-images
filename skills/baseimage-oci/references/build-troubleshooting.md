@@ -18,7 +18,7 @@
 | `useradd: UID N is not unique` / `groupadd: GID N already in use` (exit 4) / 또는 이후 `chown <user>` 가 깨짐 | **baseimage 가 그 고정 uid/gid 를 이미 다른 계정에 선점** — `baseimage/ubuntu:24.04` 는 **uid/gid 1000 = `ubuntu` 유저**, `baseimage/navix` 는 **gid/uid 999** 등. `useradd --uid N` 가 실패하고 `\|\| true` 로 삼켜지면 정작 유저가 안 만들어져 다음 `chown` 이 깨진다 | (a) 충돌 계정을 먼저 제거해 id 를 비운다: `userdel -r ubuntu 2>/dev/null \|\| true; groupdel ubuntu 2>/dev/null \|\| true` 후 원하는 uid 로 생성, **또는** (b) 고정 id 를 포기하고 폴백: `groupadd --gid N x 2>/dev/null \|\| groupadd x` + `useradd --uid N --gid x 2>/dev/null \|\| useradd --gid x`. 어느 쪽이든 **생성 후 유저가 실제 존재하는지 보장**하고 chown 한다 |
 | `tar: can't change directory to '/opt/...'` | `mkdir -p opt/foo`(상대경로)로 만들고 `tar -C /opt/foo`(절대경로)로 쓰는 불일치 | 생성·참조 경로를 **절대경로로 일치**시킨다 (`mkdir -p /opt/foo`) |
 | `/usr/bin/rm: cannot execute: required file not found` 등 base 명령이 깨짐 | tgz/아카이브를 `tar -C /` 로 풀어 **base 의 시스템 라이브러리/바이너리를 덮어씀** (alpine 전용 패턴을 glibc base 에 그대로 이식) | 아카이브를 `/` 가 아닌 전용 경로(예: `/opt/<app>`)로 풀거나, 그 이미지에 맞는 공식 Dockerfile 패턴(예: clickhouse 의 `Dockerfile.ubuntu`)을 따른다 |
-| `Permission denied` / apk·apt·파일쓰기 실패 | baseimage 기본 USER 가 **비루트** | 설치·시스템수정 단계 앞 **`USER root`**, 런타임 끝에 원본 비루트 USER 복귀 |
+| `Permission denied` / apk·apt·파일쓰기 실패 | baseimage 기본 USER 가 **비루트(`waslteam`, uid 500)** | 설치·시스템수정 단계 앞 **`USER root`**, 출하 stage 끝에 **`USER waslteam`** 복귀 |
 | `configure: ... select one of --with-openssl ...` (curl 7.85+ 등) | 외부 빌드시스템이 주던 ARG(예 `CURL_CONFIGURE_OPTION`) 미주입 → 기능/백엔드 미선택 | Dockerfile 에 구체값 ARG 명시: `ARG CURL_CONFIGURE_OPTION="--with-openssl --with-libssh2 --with-nghttp2 --with-brotli"` + 해당 `-dev` 헤더 설치 |
 | `Couldn't find the node_modules state file` (yarn) | 프론트엔드 빌드 전 의존 설치 누락, 또는 yarn classic 으로 berry 프로젝트 빌드 | **`yarn install --immutable`** 를 build 앞에. JS 빌더는 **`node:*` base** 사용(golang+apk yarn classic 금지) |
 | `make: *** [build-js] Error` / 빌더 합쳐서 실패 | multi-stage 를 단일 stage 로 합치고 언어 툴체인을 욱여넣음 | 원본 multi-stage 보존, 빌드 전용 stage 는 원본 pinned base(golang/node) 유지, `COPY --from=` 관계 유지 |
@@ -34,11 +34,13 @@
 | 증상 (컨테이너/파드 로그) | 원인 | 해결 |
 |---|---|---|
 | `exec /<binary>: no such file or directory` (바이너리는 `ls` 로 보이는데도) | **glibc 동적 링크 바이너리를 musl `baseimage/alpine` 에서 실행** → loader `/lib64/ld-linux-*` 부재. GitHub release(GoReleaser) tarball 바이너리에서 흔하다 | 원본처럼 **소스에서 `CGO_ENABLED=0` 정적 빌드**(golang 빌더 → alpine COPY) 권장, 또는 glibc base(`baseimage/ubuntu`). 확인: `readelf -l <bin> \| grep interp` / `qemu-*: Could not open '/lib64/ld-linux-*'` |
-| `stat <dir>/: permission denied` / `the path "<dir>/" cannot be accessed` (상대경로) | 원본은 **root + WORKDIR=/** 로 돌았는데 wrap 이 USER/WORKDIR 를 안 맞춰 **비루트(uid 500/1000) + CWD=/root(0700)** 로 실행 → 상대경로가 풀리는 `/root` 를 비루트가 traverse 못 함 | 런타임 stage 에 원본과 동일하게 **`USER root` + `WORKDIR /`** 명시 (원본 USER 는 `docker inspect --format '{{.Config.User}} {{.Config.WorkingDir}}' <원본>` 으로 확인; 빈 값/`0`=root) |
-| `... has runAsNonRoot and image will run as root` (파드 기동 실패) | 원본은 비루트인데 wrap 이 빌드용 `USER root` 후 **원본 비루트 USER 로 복귀 안 함** → 차트의 `runAsNonRoot` 정책과 충돌 | 런타임 stage 끝에서 **원본의 정확한 비루트 uid 로 복원** |
-| 권한/소유권 관련 동작 이상 (uid 는 비루트인데 원본과 다른 값) | 원본 비루트 uid 와 **다른 uid** 로 설정(예: 65532↔65534, nobody↔다른 번호) | 원본 uid 와 정확히 일치 (이름 USER 는 `getent passwd <name>` 로 숫자까지 대조) |
+| `stat <dir>/: permission denied` / `the path "<dir>/" cannot be accessed` (상대경로) | `baseimage/alpine` 의 기본 **WORKDIR 가 `/root`(0700 root 소유)** 라 waslteam(uid 500)이 traverse 하지 못한다 — 상대경로가 여기서 풀린다 | 런타임 stage 에 **`WORKDIR` 를 앱 디렉터리(또는 `/home1/waslteam`)로 명시**. 그 경로를 `chown 500:500` 하고 상대경로가 참조하는 파일도 함께 옮긴다 |
+| `... has runAsNonRoot and image will run as root` (파드 기동 실패) | wrap 이 빌드용 `USER root` 후 **`USER waslteam` 으로 복귀하지 않음** → 차트의 `runAsNonRoot` 정책과 충돌 | 출하 stage 끝에 **`USER waslteam`**. root 가 정말 필요하면 `ROOT-REASON` 을 적고 차트의 `runAsNonRoot` 도 함께 조정 |
+| 쓰기 실패 `Permission denied` (데이터·로그·PID 경로) | root 로 돌던 원본을 waslteam 으로 내리면서 **경로 소유권을 안 옮겼거나**, 마운트 볼륨이라 이미지의 chown 이 무의미 | 빌드 타임 `chown -R 500:500 <경로>` (+ 런타임 생성 파일은 `chmod g+s`). **PVC·볼륨은 이미지로 못 고친다 → 배포에 `fsGroup: 500`** |
+| `bind: permission denied` (1024 미만 포트) | 비루트라 특권 포트를 열지 못한다 | 포트를 8080 등으로 올리거나, root 구간에서 `setcap 'cap_net_bind_service=+ep' <바이너리>` 후 `USER waslteam` 복귀 |
+| `gosu: not found` / `su-exec: not found` / `setpriv: not found` | baseimage 에 **`gosu`·`su-exec` 는 셋 다 없고 `setpriv` 는 ubuntu·navix 에만** 있다 (alpine 없음) | 그 도구를 설치하거나, 권한강하를 없애고 `USER waslteam` 으로 바로 실행 |
 
-> **예외 — 의도적 비루트는 그대로 둔다**: `redis`·`zookeeper` 등 공식 이미지는 entrypoint 가 `uid≠0` 를 감지해 root 권한강하(`gosu`)를 건너뛰고 그대로 실행하도록 설계돼 있고, 데이터 디렉터리도 빌드 때 미리 chown 한다. 이런 이미지는 wrap 이 비루트로 실행해도 정상이므로 `USER root` 로 되돌리지 말 것. entrypoint 의 uid 분기를 먼저 확인한다.
+> **예외 — entrypoint 가 권한강하하는 이미지**: `redis`·`zookeeper`·`mysql` 등 공식 이미지는 entrypoint 가 root 로 시작해 chown 뒤 `gosu` 로 강하하거나, `uid≠0` 를 감지해 강하를 건너뛰도록 설계돼 있다. entrypoint 의 uid 분기를 먼저 확인하고, root 유지가 맞으면 `# ROOT-REASON: ENTRYPOINT_DROP` 주석을 남긴다.
 
 ## 패키지 매니저 전환
 
@@ -83,8 +85,9 @@
 ## 경로/환경 차이 체크리스트
 
 - [ ] 쉘: debian 의 `/bin/sh`(dash) 가정 스크립트 → bash 문법 확인
-- [ ] 기본 USER / 홈 디렉토리: 단정하지 말고 `docker run --rm <navix> id && docker inspect <navix>` 로 확인 후 `USER`/`WORKDIR` 반영
-- [ ] root 권한이 필요한 단계는 `USER root` → 작업 → 원래 사용자로 복귀 패턴 사용
+- [ ] 기본 USER / 홈 디렉토리: 단정하지 말고 `docker run --rm <base> id && docker inspect <base>` 로 확인 (현재 3종 모두 `waslteam` 500/500, home `/home1/waslteam`)
+- [ ] root 권한이 필요한 단계는 `USER root` → 작업 → **`USER waslteam` 복귀** 패턴 사용. root 로 끝내야 하면 `# ROOT-REASON: <코드>` 주석 필수
+- [ ] 출하 stage 에 `WORKDIR` 명시 (alpine base 기본값 `/root` 는 waslteam 이 못 들어감) + 데이터·로그 경로 `chown 500:500`
 - [ ] locale / timezone 설정 명령 계열 차이 (`localedef` vs `locale-gen`)
 
 ## 알려진 빌드 에러와 해결 (위키 정책 4-4)
