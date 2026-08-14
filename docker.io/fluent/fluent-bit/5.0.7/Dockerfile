@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # fluent-bit v5.0.7 — 소스 빌드 wrapper.
 #   upstream: https://github.com/fluent/fluent-bit  (tag v5.0.7)
-# 계열 매핑: RHEL/dnf 계열 → baseimage/navix:10.1-wasl-centos  (CentOS Stream 10 / el10)
+# 계열 매핑: RHEL/dnf 계열 → baseimage/navix:10.2  (CentOS Stream 10 / el10)
 #
 # 공식 RPM 은 librdkafka 가 zlib 없이 빌드되어 Kafka gzip 압축을 지원하지 않으므로,
 # zlib 를 링크한 fluent-bit 을 소스에서 빌드한다. 아래 부가 도구를 함께 동봉한다:
@@ -22,7 +22,7 @@
 #   6) jq 보정 설치. curl/bash/python3/tar/gzip 은 navix 기본 포함.
 ARG FLB_VERSION=5.0.7
 
-FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/navix:10.1-wasl-centos AS builder
+FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/navix:10.2 AS builder
 
 ARG FLB_VERSION
 
@@ -59,7 +59,7 @@ RUN cmake .. \
   && make install
 
 
-FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/navix:10.1-wasl-centos
+FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/navix:10.2
 
 LABEL org.opencontainers.image.source="https://github.com/fluent/fluent-bit"
 LABEL org.opencontainers.image.description="Fluent Bit v5.0.7 (zlib/gzip source build) with kafka preflight + metrics path-alias tooling, wrapped onto baseimage/navix"
