@@ -11,7 +11,7 @@
 #   - 원본과 동일하게 /usr/local/aws-cli 와 /usr/local/bin/aws 를 final stage 로 복사한다.
 ARG AWS_CLI_VERSION=2.15.30
 
-FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/navix:10.1-wasl-centos AS installer
+FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/navix:10.2 AS installer
 
 USER root
 
@@ -91,7 +91,7 @@ unzip -q "/tmp/${EXE_FILENAME}" -d /tmp
 rm -rf /tmp/aws "/tmp/${EXE_FILENAME}"
 EOF
 
-FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/navix:10.1-wasl-centos
+FROM me-riyadh-1.ocir.io/axlo4g31gl45/baseimage/navix:10.2
 
 LABEL org.opencontainers.image.source="https://github.com/aws/aws-cli"
 LABEL org.opencontainers.image.description="AWS CLI v2"
